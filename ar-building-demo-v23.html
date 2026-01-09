@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR 건물 v22</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:-apple-system,sans-serif;background:#000;overflow:hidden}
+        #container{position:relative;width:100vw;height:100vh}
+        #video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:1}
+        #videoCanvas{display:none}
+        #overlay{position:absolute;top:0;left:0;width:100%;height:100%;z-index:10;pointer-events:none}
+        
+        .top-bar{position:absolute;top:0;left:0;right:0;padding:50px 20px 20px;display:flex;justify-content:space-between;z-index:100;pointer-events:none}
+        .top-left{display:flex;flex-direction:column;gap:12px;pointer-events:auto}
+        .icon-btn{width:48px;height:48px;background:rgba(255,255,255,0.95);border-radius:50%;display:flex;align-items:center;justify-content:center;border:none}
+        .icon-btn.active{background:linear-gradient(135deg,#6366f1,#4f46e5)}
+        .icon-btn.active svg{fill:white}
+        .icon-btn svg{width:24px;height:24px;fill:#333}
+        
+        .minimap{width:200px;height:200px;border-radius:20px;background:linear-gradient(135deg,#e8f0fe,#d2e3fc);display:none;position:relative}
+        .minimap.open{display:block}
+        .minimap-close{position:absolute;top:8px;left:8px;width:28px;height:28px;background:rgba(0,0,0,0.5);border-radius:50%;border:none;display:flex;align-items:center;justify-content:center}
+        .minimap-close svg{width:16px;height:16px;fill:white}
+        
+        .mode-ind{padding:10px 16px;background:rgba(255,255,255,0.95);border-radius:20px;font-size:14px;font-weight:500;pointer-events:auto}
+        
+        .bottom-bar{position:absolute;bottom:0;left:0;right:0;padding:20px 20px 40px;display:flex;justify-content:center;z-index:100;pointer-events:none}
+        .bottom-controls{display:flex;gap:8px;padding:8px;background:rgba(255,255,255,0.95);border-radius:30px;pointer-events:auto}
+        .ctrl-btn{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:none}
+        .ctrl-btn.pri{background:linear-gradient(135deg,#6366f1,#4f46e5)}
+        .ctrl-btn.pri svg{fill:white}
+        .ctrl-btn.sec{background:transparent}
+        .ctrl-btn.sec svg{fill:#666}
+        .ctrl-btn svg{width:22px;height:22px}
+        
+        .building-label{position:absolute;display:flex;flex-direction:column;align-items:center;z-index:50;pointer-events:auto}
+        .label-card{padding:8px 14px;border-radius:8px;text-align:center}
+        .label-card.orange{background:#F97316}
+        .label-card.blue{background:#3B82F6}
+        .label-card.purple{background:#8B5CF6}
+        .label-card.green{background:#22C55E}
+        .label-name{color:white;font-size:13px;font-weight:700}
+        .label-dist{color:rgba(255,255,255,0.9);font-size:11px;margin-top:2px}
+        
+        .label-actions{display:flex;gap:8px;margin-top:8px}
+        .act-btn{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid white}
+        .act-btn svg{width:20px;height:20px;fill:white}
+        .act-btn.pin.orange{background:#F97316}
+        .act-btn.pin.blue{background:#3B82F6}
+        .act-btn.pin.purple{background:#8B5CF6}
+        .act-btn.pin.green{background:#22C55E}
+        .act-btn.xray{background:white}
+        .act-btn.xray svg{fill:#6366f1}
+        .act-btn.xray.active{background:#6366f1}
+        .act-btn.xray.active svg{fill:white}
+        
+        .xray-box{position:absolute;border:2px solid rgba(99,102,241,0.5);border-radius:12px;background:rgba(99,102,241,0.15);backdrop-filter:blur(2px);display:none;flex-direction:column;z-index:60;pointer-events:auto}
+        .xray-box.open{display:flex}
+        .xray-head{background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;padding:10px 14px;font-size:13px;font-weight:700;display:flex;justify-content:space-between;align-items:center}
+        .xray-head svg{width:16px;height:16px;fill:white}
+        .xray-close{width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.2);border:none;display:flex;align-items:center;justify-content:center}
+        .xray-list{flex:1;padding:4px;display:flex;flex-direction:column;gap:2px;max-height:250px;overflow-y:auto}
+        .xray-item{display:flex;align-items:center;gap:8px;padding:10px;border-radius:6px;font-size:12px;color:white;background:rgba(255,255,255,0.1)}
+        .xray-item.vacant{background:rgba(34,197,94,0.3);border:1px solid #22C55E}
+        .xray-item.highlight{background:rgba(249,115,22,0.3);border:1px solid #F97316}
+        
+        .live-feed{position:absolute;inset:0;background:rgba(0,0,0,0.9);z-index:200;display:none;flex-direction:column}
+        .live-feed.open{display:flex}
+        .live-head{display:flex;align-items:center;justify-content:center;gap:10px;padding:60px 20px 20px}
+        .live-dot{width:10px;height:10px;background:#EF4444;border-radius:50%;animation:pulse 1.5s infinite}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+        .live-head span{color:white;font-size:18px;font-weight:700}
+        .live-items{flex:1;padding:20px;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+        .live-item{display:flex;align-items:center;gap:14px;padding:16px;background:rgba(255,255,255,0.1);border-radius:16px}
+        .live-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center}
+        .live-icon.parking{background:#3B82F6}
+        .live-icon.promo{background:#22C55E}
+        .live-icon.food{background:#F97316}
+        .live-icon.meeting{background:#8B5CF6}
+        .live-icon.elevator{background:#EC4899}
+        .live-icon.delivery{background:#F59E0B}
+        .live-icon svg{width:22px;height:22px;fill:white}
+        .live-text{color:white;font-size:15px;font-weight:500;flex:1}
+        .live-footer{padding:20px 20px 40px;display:flex;justify-content:center}
+        .live-close-btn{padding:16px 48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:30px;color:white;font-size:16px;font-weight:600}
+        
+        .panel{position:absolute;bottom:0;left:0;right:0;height:70vh;background:rgba(30,30,50,0.95);backdrop-filter:blur(20px);border-radius:24px 24px 0 0;z-index:150;transform:translateY(100%);transition:transform 0.3s;display:flex;flex-direction:column}
+        .panel.open{transform:translateY(0)}
+        .panel-head{padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.1)}
+        .panel-title{color:white;font-size:18px;font-weight:700}
+        .panel-close{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.2);border:none;display:flex;align-items:center;justify-content:center}
+        .panel-close svg{width:20px;height:20px;fill:white}
+        .panel-cards{flex:1;padding:16px 20px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
+        .card{background:rgba(255,255,255,0.1);border-radius:16px;padding:16px;display:flex;gap:14px;align-items:center}
+        .card-icon{width:50px;height:50px;border-radius:12px;display:flex;align-items:center;justify-content:center}
+        .card-icon.live{background:#EF4444}
+        .card-icon.parking{background:#3B82F6}
+        .card-icon.realestate{background:#3B82F6}
+        .card-icon.company{background:#10B981}
+        .card-icon.restaurant{background:#F97316}
+        .card-icon.cafe{background:#8B5CF6}
+        .card-icon.facility{background:#6366F1}
+        .card-icon svg{width:26px;height:26px;fill:white}
+        .card-content{flex:1}
+        .card-name{font-size:15px;font-weight:700;color:white}
+        .card-desc{font-size:12px;color:rgba(255,255,255,0.7);margin-top:4px}
+        .card-action{padding:10px 16px;background:rgba(255,255,255,0.2);border:none;border-radius:20px;color:white;font-size:12px;font-weight:600}
+        
+        .loading{position:absolute;inset:0;background:linear-gradient(135deg,#1a1a2e,#16213e);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:500}
+        .loading.hidden{display:none}
+        .spinner{width:50px;height:50px;border:3px solid rgba(99,102,241,0.3);border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .loading-text{color:white;font-size:16px;margin-top:20px}
+    </style>
+</head>
+<body>
+<div id="container">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="videoCanvas"></canvas>
+    <div id="overlay"></div>
+    
+    <div class="xray-box" id="xrayBox">
+        <div class="xray-head">
+            <span id="xrayTitle">층별 안내</span>
+            <button class="xray-close" onclick="closeXray()"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+        </div>
+        <div class="xray-list" id="xrayList"></div>
+    </div>
+    
+    <div class="top-bar">
+        <div class="top-left">
+            <button class="icon-btn" id="mapBtn" onclick="toggleMinimap()">
+                <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
+            </button>
+            <div class="minimap" id="minimap">
+                <button class="minimap-close" onclick="toggleMinimap()"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+            </div>
+        </div>
+        <div class="mode-ind">AR모드</div>
+    </div>
+    
+    <div class="live-feed" id="liveFeed">
+        <div class="live-head"><div class="live-dot"></div><span>지금 이 순간</span></div>
+        <div class="live-items" id="liveItems"></div>
+        <div class="live-footer"><button class="live-close-btn" onclick="closeLiveFeed()">닫기</button></div>
+    </div>
+    
+    <div class="bottom-bar" id="bottomBar">
+        <div class="bottom-controls">
+            <button class="ctrl-btn pri" onclick="resetMemory()"><svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
+        </div>
+    </div>
+    
+    <div class="panel" id="panel">
+        <div class="panel-head">
+            <span class="panel-title" id="panelTitle">건물</span>
+            <button class="panel-close" onclick="closePanel()"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+        </div>
+        <div class="panel-cards" id="panelCards"></div>
+    </div>
+    
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <div class="loading-text">AR 모델 로딩...</div>
+    </div>
+</div>
+
+<script>
+let video, overlay, model, videoCanvas, ctx;
+let isRunning = false;
+let currentXrayTracker = null;
+let buildingMemory = [], activeTrackers = new Map();
+let nextBuildingIndex = 0, nextMemoryId = 1, nextTrackerId = 1;
+
+// 건물 층별 데이터
+const buildingFloors = {
+    'GS타워': [
+        { floor: '40F', company: '스카이 라운지', logo: '☁️', status: '' },
+        { floor: '39F', company: '임원 회의실', logo: '👔', status: '' },
+        { floor: '35F', company: 'GS홀딩스', logo: 'GS', status: '' },
+        { floor: '30F', company: 'GS리테일', logo: 'GS', status: '' },
+        { floor: '25F', company: '공실', logo: '🏢', status: 'vacant', vacant: true },
+        { floor: '20F', company: 'GS에너지', logo: 'GS', status: '' },
+        { floor: '15F', company: '테크스타트업', logo: '🚀', status: 'hiring', highlight: true },
+        { floor: '12F', company: 'AI벤처스', logo: '🤖', status: 'hiring', highlight: true },
+        { floor: '10F', company: '공실', logo: '🏢', status: 'vacant', vacant: true },
+        { floor: '5F', company: '법무법인', logo: '⚖️', status: '' },
+        { floor: '1F', company: '로비/카페', logo: '☕', status: '' },
+        { floor: 'B1', company: '푸드코트', logo: '🍽️', status: '' },
+        { floor: 'B3', company: '주차장', logo: '🚗', status: '' },
+    ],
+    '테헤란로 빌딩': [
+        { floor: '20F', company: '스타트업 허브', logo: '🚀', status: 'hiring', highlight: true },
+        { floor: '15F', company: '공실', logo: '🏢', status: 'vacant', vacant: true },
+        { floor: '10F', company: 'IT 컨설팅', logo: '💻', status: '' },
+        { floor: '1F', company: '편의점', logo: '🏪', status: '' },
+    ]
+};
+
+// 실시간 피드 데이터
+const liveFeedData = [
+    { icon: 'parking', text: 'B3 주차장 15자리 비었어요', time: '방금 전', action: '확인' },
+    { icon: 'promo', text: '1층 카페 아메리카노 1+1!', time: '2분 전', action: '쿠폰' },
+    { icon: 'meeting', text: '15층 회의실 C 예약 취소됨', time: '5분 전', action: '예약' },
+    { icon: 'food', text: 'B1 구내식당 A코스 매진 임박', time: '8분 전', action: '메뉴' },
+    { icon: 'elevator', text: '엘리베이터 대기 평균 2분', time: '10분 전', action: '' },
+    { icon: 'delivery', text: '무인택배함 3칸 남음', time: '15분 전', action: '위치' },
+];
+
+const liveFeedIcons = {
+    parking: '<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z"/>',
+    promo: '<path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58s1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/>',
+    meeting: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/>',
+    food: '<path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/>',
+    elevator: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3l4 4h-3v4h-2v-4H8l4-4zm4 9H8v-2h8v2z"/>',
+    delivery: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 16H6c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1h12c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1zm-6-10l-4 4h3v4h2v-4h3l-4-4z"/>'
+};
+
+// 건물 데이터
+const buildings = [
+    { name: 'GS타워', distance: 125, color: 'orange' },
+    { name: '테헤란로 빌딩', distance: 85, color: 'blue' },
+    { name: '역삼 타워', distance: 110, color: 'blue' },
+    { name: '강남파이낸스센터', distance: 200, color: 'green' },
+    { name: '삼성타운', distance: 180, color: 'orange' }
+];
+
+// AR 카드 데이터
+const arCardData = {
+    restaurant: [{ name: '스시 오마카세', desc: '프리미엄 오마카세', floor: 'B1층', rating: '4.8', image: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=800' }],
+    cafe: [{ name: '루프탑 카페', desc: '시그니처 라떼', floor: '40층', rating: '4.7', image: 'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=800' }],
+    parking: [{ name: '실시간 주차', desc: 'B3: 15/150 여유', floor: 'B2-B3', status: '여유' }],
+    realestate: [{ name: '25층 공실', desc: '전용 85평, 강남 조망', floor: '25층', price: '보5억/월2,500만', image: 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=800' }],
+    company: [{ name: '테크스타트업', desc: 'AI 물류 솔루션', floor: '15층', employees: '채용중 🔥', image: 'https://images.unsplash.com/photo-1553877522-43269d4ea984?w=800' }],
+    facility: [{ name: '피트니스', desc: '최신 운동기구', floor: 'B2층', hours: '06:00-23:00', image: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800' }],
+    live: [{ name: '지금 이 순간', desc: '실시간 건물 현황', status: 'LIVE' }]
+};
+
+const categoryIcons = {
+    restaurant: '<path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/>',
+    cafe: '<path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/>',
+    parking: '<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z"/>',
+    realestate: '<path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/>',
+    company: '<path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/>',
+    facility: '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>',
+    live: '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>'
+};
+
+const categoryNames = {
+    restaurant: '음식점', cafe: '카페', parking: '주차장',
+    realestate: '공실', company: '입주기업', facility: '편의시설', live: '실시간'
+};
+
+function toggleMinimap() {
+    document.getElementById('minimap').classList.toggle('open');
+    document.getElementById('mapBtn').classList.toggle('active');
+}
+
+function resetMemory() {
+    buildingMemory = [];
+    nextBuildingIndex = 0;
+    activeTrackers.forEach(t => t.el.remove());
+    activeTrackers.clear();
+    closeXray();
+}
+
+function openXray(tracker) {
+    currentXrayTracker = tracker;
+    const buildingName = tracker.building.name;
+    const floors = buildingFloors[buildingName] || buildingFloors['GS타워'];
+    
+    document.getElementById('xrayTitle').textContent = buildingName;
+    document.getElementById('xrayList').innerHTML = floors.map(f => 
+        '<div class="xray-item '+(f.vacant?'vacant':'')+(f.highlight?' highlight':'')+'">'+
+        '<span style="width:30px;font-weight:700">'+f.floor+'</span>'+
+        '<span style="width:24px;text-align:center">'+f.logo+'</span>'+
+        '<span style="flex:1">'+f.company+'</span>'+
+        (f.status ? '<span style="font-size:10px;padding:2px 8px;border-radius:8px;background:'+(f.status==='hiring'?'#F97316':'#22C55E')+'">'+(f.status==='hiring'?'채용중':'공실')+'</span>' : '')+
+        '</div>'
+    ).join('');
+    updateXrayPos();
+    document.getElementById('xrayBox').classList.add('open');
+}
+
+function updateXrayPos() {
+    if (!currentXrayTracker) return;
+    const b = currentXrayTracker.smoothBox;
+    const el = document.getElementById('xrayBox');
+    el.style.left = b.x + 'px';
+    el.style.top = b.y + 'px';
+    el.style.width = Math.max(200, b.width) + 'px';
+    el.style.height = Math.min(260, b.height) + 'px';
+}
+
+function closeXray() {
+    currentXrayTracker = null;
+    document.getElementById('xrayBox').classList.remove('open');
+    document.querySelectorAll('.act-btn.xray').forEach(b => b.classList.remove('active'));
+}
+
+function openLiveFeed() {
+    document.getElementById('liveFeed').classList.add('open');
+    document.getElementById('liveItems').innerHTML = liveFeedData.map((item, i) => 
+        '<div class="live-item" style="animation-delay:'+(i*0.05)+'s">'+
+        '<div class="live-icon '+item.icon+'"><svg viewBox="0 0 24 24">'+liveFeedIcons[item.icon]+'</svg></div>'+
+        '<div style="flex:1"><div class="live-text">'+item.text+'</div><div style="color:rgba(255,255,255,0.5);font-size:12px;margin-top:4px">'+item.time+'</div></div>'+
+        (item.action ? '<button style="padding:10px 16px;background:rgba(255,255,255,0.2);border:none;border-radius:20px;color:white;font-size:13px;font-weight:600">'+item.action+'</button>' : '')+
+        '</div>'
+    ).join('');
+}
+
+function closeLiveFeed() {
+    document.getElementById('liveFeed').classList.remove('open');
+}
+
+function openPanel(building) {
+    document.getElementById('panelTitle').textContent = building.name;
+    document.getElementById('panel').classList.add('open');
+    document.getElementById('bottomBar').style.display = 'none';
+    
+    const categories = ['live', 'parking', 'realestate', 'company', 'restaurant', 'cafe', 'facility'];
+    let html = '';
+    
+    categories.forEach(cat => {
+        const item = arCardData[cat]?.[0];
+        if (!item) return;
+        let extra = item.rating ? '⭐'+item.rating : item.price || item.employees || (item.hours ? '🕐'+item.hours : '') || (item.status || '');
+        
+        html += '<div class="card">'+
+            '<div class="card-icon '+cat+'"><svg viewBox="0 0 24 24">'+categoryIcons[cat]+'</svg></div>'+
+            '<div class="card-content">'+
+            '<div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px">'+categoryNames[cat]+'</div>'+
+            '<div class="card-name">'+item.name+'</div>'+
+            '<div class="card-desc">'+item.desc+(extra ? ' · '+extra : '')+'</div>'+
+            '</div>'+
+            '<button class="card-action" onclick="'+(cat==='live'?'openLiveFeed();closePanel()':'alert(\'상세페이지\')')+'">'+(cat==='live'?'피드':'상세')+'</button>'+
+            '</div>';
+    });
+    
+    document.getElementById('panelCards').innerHTML = html;
+}
+
+function closePanel() {
+    document.getElementById('panel').classList.remove('open');
+    document.getElementById('bottomBar').style.display = 'flex';
+}
+
+function handlePinClick(tid) {
+    const t = activeTrackers.get(tid);
+    if (t) openPanel(t.building);
+}
+
+function handleXrayClick(tid, btn) {
+    const t = activeTrackers.get(tid);
+    if (!t) return;
+    document.querySelectorAll('.act-btn.xray').forEach(b => b.classList.remove('active'));
+    if (currentXrayTracker && currentXrayTracker.id === tid) {
+        closeXray();
+    } else {
+        btn.classList.add('active');
+        openXray(t);
+    }
+}
+
+function createLabel(building, tid) {
+    const el = document.createElement('div');
+    el.className = 'building-label';
+    el.innerHTML = 
+        '<div class="label-card '+building.color+'">'+
+        '<div class="label-name">'+building.name+'</div>'+
+        '<div class="label-dist">'+building.distance+'m</div>'+
+        '</div>'+
+        '<div class="label-actions">'+
+        '<div class="act-btn pin '+building.color+'" data-tid="'+tid+'"><svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg></div>'+
+        '<div class="act-btn xray" data-tid="'+tid+'"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg></div>'+
+        '</div>';
+    
+    const pinBtn = el.querySelector('.act-btn.pin');
+    const xrayBtn = el.querySelector('.act-btn.xray');
+    
+    pinBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        handlePinClick(tid);
+    });
+    
+    xrayBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        handleXrayClick(tid, xrayBtn);
+    });
+    
+    overlay.appendChild(el);
+    return el;
+}
+
+function calcIoU(a, b) {
+    const x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+    const x2 = Math.min(a.x + a.width, b.x + b.width);
+    const y2 = Math.min(a.y + a.height, b.y + b.height);
+    if (x2 <= x1 || y2 <= y1) return 0;
+    const inter = (x2 - x1) * (y2 - y1);
+    return inter / (a.width * a.height + b.width * b.height - inter);
+}
+
+function getColorHist(box) {
+    try {
+        videoCanvas.width = video.videoWidth;
+        videoCanvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const sx = video.videoWidth / window.innerWidth;
+        const sy = video.videoHeight / window.innerHeight;
+        const x = Math.floor(box.x * sx), y = Math.floor(box.y * sy);
+        const w = Math.floor(box.width * sx), h = Math.floor(box.height * sy);
+        if (w <= 0 || h <= 0) return null;
+        const data = ctx.getImageData(x, y, w, h).data;
+        const hist = new Array(12).fill(0);
+        let n = 0;
+        for (let i = 0; i < data.length; i += 16) {
+            hist[Math.floor(data[i]/64)]++;
+            hist[4+Math.floor(data[i+1]/64)]++;
+            hist[8+Math.floor(data[i+2]/64)]++;
+            n++;
+        }
+        for (let i = 0; i < 12; i++) hist[i] /= n;
+        return hist;
+    } catch(e) { return null; }
+}
+
+function findMemory(box, exclude) {
+    const nx = (box.x + box.width/2) / window.innerWidth;
+    const ny = (box.y + box.height/2) / window.innerHeight;
+    const hist = getColorHist(box);
+    let best = null, bestScore = 0.35;
+    for (const m of buildingMemory) {
+        if (exclude.has(m.id)) continue;
+        const dx = nx - m.pos.x, dy = ny - m.pos.y;
+        const posScore = Math.max(0, 1 - Math.sqrt(dx*dx + dy*dy) * 2);
+        let colorScore = 0.5;
+        if (hist && m.hist) {
+            let s = 0;
+            for (let i = 0; i < 12; i++) s += 1 - Math.abs(hist[i] - m.hist[i]);
+            colorScore = s / 12;
+        }
+        const score = posScore * 0.4 + colorScore * 0.6;
+        if (score > bestScore) { bestScore = score; best = m; }
+    }
+    return best;
+}
+
+function register(box) {
+    const b = buildings[nextBuildingIndex++ % buildings.length];
+    const entry = {
+        id: nextMemoryId++,
+        building: b,
+        pos: {x: (box.x + box.width/2) / window.innerWidth, y: (box.y + box.height/2) / window.innerHeight},
+        hist: getColorHist(box)
+    };
+    buildingMemory.push(entry);
+    return entry;
+}
+
+function updateMem(m, box) {
+    const nx = (box.x + box.width/2) / window.innerWidth;
+    const ny = (box.y + box.height/2) / window.innerHeight;
+    m.pos.x = m.pos.x * 0.7 + nx * 0.3;
+    m.pos.y = m.pos.y * 0.7 + ny * 0.3;
+}
+
+function createTracker(box, mem) {
+    const tid = nextTrackerId++;
+    return {
+        id: tid,
+        memId: mem.id,
+        building: mem.building,
+        box: {...box},
+        smoothBox: {...box},
+        el: createLabel(mem.building, tid),
+        lastSeen: Date.now()
+    };
+}
+
+async function detect() {
+    if (!isRunning) return;
+    
+    try {
+        const preds = await model.detect(video);
+        const sx = window.innerWidth / video.videoWidth;
+        const sy = window.innerHeight / video.videoHeight;
+        
+        let boxes = preds.filter(p => p.class === 'cup' && p.score >= 0.6).map(p => ({
+            x: p.bbox[0] * sx, y: p.bbox[1] * sy,
+            width: p.bbox[2] * sx, height: p.bbox[3] * sy
+        }));
+        
+        const now = Date.now();
+        const matched = new Set(), usedBox = new Set();
+        
+        for (const [tid, t] of activeTrackers) {
+            let bestIoU = 0.2, bestIdx = -1;
+            boxes.forEach((b, i) => {
+                if (usedBox.has(i)) return;
+                const iou = calcIoU(t.box, b);
+                if (iou > bestIoU) { bestIoU = iou; bestIdx = i; }
+            });
+            
+            if (bestIdx >= 0) {
+                const b = boxes[bestIdx];
+                t.box = {...b};
+                t.lastSeen = now;
+                t.smoothBox.x += (b.x - t.smoothBox.x) * 0.7;
+                t.smoothBox.y += (b.y - t.smoothBox.y) * 0.7;
+                t.smoothBox.width += (b.width - t.smoothBox.width) * 0.7;
+                t.smoothBox.height += (b.height - t.smoothBox.height) * 0.7;
+                const m = buildingMemory.find(x => x.id === t.memId);
+                if (m) updateMem(m, b);
+                matched.add(tid);
+                usedBox.add(bestIdx);
+            }
+        }
+        
+        const usedMem = new Set();
+        activeTrackers.forEach(t => usedMem.add(t.memId));
+        
+        boxes.forEach((b, i) => {
+            if (usedBox.has(i)) return;
+            let m = findMemory(b, usedMem);
+            if (!m) m = register(b);
+            else updateMem(m, b);
+            usedMem.add(m.id);
+            const t = createTracker(b, m);
+            activeTrackers.set(t.id, t);
+            matched.add(t.id);
+        });
+        
+        for (const [tid, t] of activeTrackers) {
+            if (!matched.has(tid)) {
+                if (now - t.lastSeen > 500) {
+                    t.el.remove();
+                    activeTrackers.delete(tid);
+                    if (currentXrayTracker?.id === tid) closeXray();
+                } else {
+                    t.el.style.opacity = '0';
+                }
+            }
+        }
+        
+        for (const [tid, t] of activeTrackers) {
+            if (matched.has(tid)) {
+                t.el.style.left = (t.smoothBox.x + t.smoothBox.width/2) + 'px';
+                t.el.style.top = t.smoothBox.y + 'px';
+                t.el.style.transform = 'translate(-50%, -100%)';
+                t.el.style.opacity = '1';
+            }
+        }
+        
+        if (currentXrayTracker && activeTrackers.has(currentXrayTracker.id)) updateXrayPos();
+        
+    } catch(e) { console.error(e); }
+    
+    requestAnimationFrame(detect);
+}
+
+async function init() {
+    video = document.getElementById('video');
+    overlay = document.getElementById('overlay');
+    videoCanvas = document.getElementById('videoCanvas');
+    ctx = videoCanvas.getContext('2d', {willReadFrequently: true});
+    
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {facingMode:'environment', width:{ideal:1280}, height:{ideal:720}},
+            audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        
+        document.querySelector('.loading-text').textContent = 'AI 모델 로딩...';
+        model = await cocoSsd.load();
+        
+        document.getElementById('loading').classList.add('hidden');
+        isRunning = true;
+        detect();
+    } catch(e) {
+        document.querySelector('.loading-text').textContent = '카메라 접근 실패: ' + e.message;
+    }
+}
+
+window.onload = init;
+</script>
+</body>
+</html>
