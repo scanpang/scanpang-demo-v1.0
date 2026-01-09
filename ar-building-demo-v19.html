@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR 건물 인식 데모 v19</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            background: #000;
+            overflow: hidden;
+            touch-action: none;
+        }
+        
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        #video {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+        }
+        
+        #videoCanvas, #contourCanvas { display: none; }
+        
+        #overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+        }
+        
+        #overlay.interactive { pointer-events: auto; }
+        
+        /* 상단 바 */
+        .top-bar {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            padding: 50px 20px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            z-index: 100;
+        }
+        
+        .top-left {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .icon-btn {
+            width: 48px; height: 48px;
+            background: rgba(255,255,255,0.95);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        
+        .icon-btn.active {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+        }
+        
+        .icon-btn.active svg { fill: white; }
+        .icon-btn svg { width: 24px; height: 24px; fill: #333; }
+        
+        /* 미니맵 */
+        .minimap-container {
+            position: relative;
+            width: 200px; height: 200px;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            opacity: 0;
+            transform: scale(0.8) translateY(-10px);
+            transform-origin: top left;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none;
+        }
+        
+        .minimap-container.open {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+            pointer-events: auto;
+        }
+        
+        .minimap-close {
+            position: absolute;
+            top: 10px; left: 10px;
+            width: 28px; height: 28px;
+            background: rgba(0,0,0,0.5);
+            border-radius: 50%;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 10;
+        }
+        
+        .minimap-close svg { width: 16px; height: 16px; fill: white; }
+        
+        .minimap {
+            width: 100%; height: 100%;
+            background: linear-gradient(135deg, #e8f0fe 0%, #d2e3fc 100%);
+            position: relative;
+        }
+        
+        .minimap-road { position: absolute; background: #fff; }
+        .minimap-road.horizontal { height: 6px; left: 0; right: 0; }
+        .minimap-road.vertical { width: 6px; top: 0; bottom: 0; }
+        
+        .minimap-marker {
+            position: absolute;
+            width: 26px; height: 26px;
+            border-radius: 50%;
+            background: #3B82F6;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+            transform: translate(-50%, -50%);
+            border: 2px solid white;
+        }
+        
+        .minimap-marker.active { background: #F97316; }
+        
+        .minimap-current {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            transform: translate(-50%, -50%);
+        }
+        
+        .minimap-current-dot {
+            width: 40px; height: 40px;
+            background: #3B82F6;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 10px rgba(59, 130, 246, 0.5);
+            border: 3px solid white;
+        }
+        
+        .minimap-current-dot svg { width: 20px; height: 20px; fill: white; }
+        
+        .minimap-current-pulse {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            background: rgba(59, 130, 246, 0.3);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+        }
+        
+        /* 모드 표시 (우상단) */
+        .mode-indicator {
+            padding: 10px 18px;
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            color: #333;
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        }
+        
+        .mode-indicator svg { width: 16px; height: 16px; fill: #6366f1; }
+        
+        /* 하단 컨트롤 */
+        .bottom-bar {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            padding: 20px 20px 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        
+        .bottom-controls {
+            display: flex;
+            gap: 8px;
+            padding: 8px;
+            background: rgba(255,255,255,0.95);
+            border-radius: 30px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.15);
+        }
+        
+        .control-btn {
+            width: 44px; height: 44px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .control-btn.primary {
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            color: white;
+        }
+        
+        .control-btn.secondary { background: transparent; color: #666; }
+        .control-btn svg { width: 22px; height: 22px; fill: currentColor; }
+        
+        /* 건물 라벨 */
+        .building-label {
+            position: absolute;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+        
+        .building-label.fade-in { animation: fadeInUp 0.3s ease-out; }
+        
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .label-card {
+            padding: 8px 14px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 80px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+            transition: transform 0.2s;
+            position: relative;
+        }
+        
+        .building-label:active .label-card { transform: scale(0.95); }
+        
+        .label-card.orange { background: #F97316; }
+        .label-card.blue { background: #3B82F6; }
+        .label-card.purple { background: #8B5CF6; }
+        .label-card.green { background: #22C55E; }
+        
+        .label-name { color: white; font-size: 13px; font-weight: 700; white-space: nowrap; }
+        .label-distance { color: rgba(255,255,255,0.9); font-size: 12px; font-weight: 500; margin-top: 2px; }
+        
+        /* 핀 + 투시 버튼 컨테이너 */
+        .label-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        
+        .label-pin {
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .label-pin:active { transform: scale(0.9); }
+        
+        .label-pin.orange { background: #F97316; }
+        .label-pin.blue { background: #3B82F6; }
+        .label-pin.purple { background: #8B5CF6; }
+        .label-pin.green { background: #22C55E; }
+        .label-pin svg { width: 16px; height: 16px; fill: white; }
+        
+        .label-xray {
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.95);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+        }
+        
+        .label-xray:active { transform: scale(0.9); }
+        .label-xray.active { background: linear-gradient(135deg, #6366f1, #4f46e5); }
+        .label-xray svg { width: 16px; height: 16px; fill: #6366f1; }
+        .label-xray.active svg { fill: white; }
+        
+        .label-recognized {
+            position: absolute;
+            top: -8px; right: -8px;
+            width: 20px; height: 20px;
+            background: #22C55E;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid white;
+            animation: popIn 0.3s ease-out;
+        }
+        
+        .label-recognized svg { width: 12px; height: 12px; fill: white; }
+        
+        @keyframes popIn {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+        
+        /* ========================================
+           건물 투시 모드 (X-Ray)
+           ======================================== */
+        .xray-overlay {
+            position: absolute;
+            pointer-events: none;
+            border: 2px solid rgba(99, 102, 241, 0.5);
+            border-radius: 12px;
+            background: rgba(99, 102, 241, 0.1);
+            backdrop-filter: blur(2px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .xray-overlay.active { display: flex; pointer-events: auto; }
+        
+        .xray-header {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            color: white;
+            padding: 10px 14px;
+            font-size: 13px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .xray-header-left {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .xray-header svg { width: 16px; height: 16px; fill: white; }
+        
+        .xray-close {
+            width: 24px; height: 24px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        
+        .xray-close svg { width: 14px; height: 14px; fill: white; }
+        
+        .xray-floors {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 4px;
+            gap: 2px;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+        
+        .xray-floor {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-size: 11px;
+            color: white;
+            background: rgba(255,255,255,0.1);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .xray-floor:hover { background: rgba(255,255,255,0.2); }
+        
+        .xray-floor.vacant { background: rgba(34, 197, 94, 0.3); border: 1px solid #22C55E; }
+        .xray-floor.highlight { background: rgba(249, 115, 22, 0.3); border: 1px solid #F97316; }
+        
+        .xray-floor-num {
+            width: 32px;
+            font-weight: 700;
+            color: rgba(255,255,255,0.8);
+        }
+        
+        .xray-floor-company {
+            flex: 1;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .xray-floor-logo {
+            width: 22px; height: 22px;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+        }
+        
+        .xray-floor-status {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.2);
+            font-weight: 600;
+        }
+        
+        .xray-floor-status.hiring { background: #F97316; }
+        .xray-floor-status.vacant { background: #22C55E; }
+        
+        /* ========================================
+           지금 이 순간 피드
+           ======================================== */
+        .live-feed {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 250;
+            display: flex;
+            flex-direction: column;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease-out;
+        }
+        
+        .live-feed.open {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .live-feed-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 60px 20px 20px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.5), transparent);
+        }
+        
+        .live-dot {
+            width: 10px; height: 10px;
+            background: #EF4444;
+            border-radius: 50%;
+            animation: livePulse 1.5s infinite;
+        }
+        
+        @keyframes livePulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.9); }
+        }
+        
+        .live-feed-header span {
+            color: white;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        
+        .live-feed-items {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        .live-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 16px;
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.15);
+            animation: slideIn 0.3s ease-out backwards;
+        }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .live-item-icon {
+            width: 44px; height: 44px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        
+        .live-item-icon.parking { background: linear-gradient(135deg, #3B82F6, #2563EB); }
+        .live-item-icon.food { background: linear-gradient(135deg, #F97316, #EA580C); }
+        .live-item-icon.meeting { background: linear-gradient(135deg, #8B5CF6, #7C3AED); }
+        .live-item-icon.promo { background: linear-gradient(135deg, #22C55E, #16A34A); }
+        .live-item-icon.elevator { background: linear-gradient(135deg, #EC4899, #DB2777); }
+        .live-item-icon.delivery { background: linear-gradient(135deg, #F59E0B, #D97706); }
+        
+        .live-item-icon svg { width: 22px; height: 22px; fill: white; }
+        
+        .live-item-content { flex: 1; min-width: 0; }
+        
+        .live-item-text {
+            color: white;
+            font-size: 15px;
+            font-weight: 500;
+            line-height: 1.4;
+        }
+        
+        .live-item-time {
+            color: rgba(255,255,255,0.5);
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        
+        .live-item-action {
+            padding: 10px 16px;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            border-radius: 20px;
+            color: white;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        
+        /* 피드 하단 닫기 버튼 */
+        .live-feed-footer {
+            padding: 20px;
+            padding-bottom: 40px;
+            display: flex;
+            justify-content: center;
+        }
+        
+        .live-feed-close {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 16px 48px;
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 30px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .live-feed-close:active {
+            transform: scale(0.98);
+            background: rgba(255,255,255,0.25);
+        }
+        
+        .live-feed-close svg {
+            width: 20px;
+            height: 20px;
+            fill: white;
+        }
+        
+        /* AR 카드 패널 */
+        .ar-card-panel {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 70vh;
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 24px 24px 0 0;
+            z-index: 200;
+            transform: translateY(100%);
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            flex-direction: column;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-bottom: none;
+        }
+        
+        .ar-card-panel.open { transform: translateY(0); }
+        
+        .panel-header {
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .panel-title { color: white; font-size: 18px; font-weight: 700; }
+        
+        .panel-close {
+            width: 36px; height: 36px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        
+        .panel-close svg { width: 20px; height: 20px; fill: white; }
+        
+        .panel-handle {
+            width: 40px; height: 4px;
+            background: rgba(255,255,255,0.4);
+            border-radius: 2px;
+            margin: 12px auto 0;
+        }
+        
+        .ar-cards-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .ar-card {
+            background: rgba(255,255,255,0.12);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 16px;
+            border: 1px solid rgba(255,255,255,0.15);
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            min-height: 100px;
+        }
+        
+        .ar-card-icon {
+            width: 50px; height: 50px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        
+        .ar-card-icon.restaurant { background: linear-gradient(135deg, #F97316, #EA580C); }
+        .ar-card-icon.cafe { background: linear-gradient(135deg, #8B5CF6, #7C3AED); }
+        .ar-card-icon.shopping { background: linear-gradient(135deg, #EC4899, #DB2777); }
+        .ar-card-icon.realestate { background: linear-gradient(135deg, #3B82F6, #2563EB); }
+        .ar-card-icon.company { background: linear-gradient(135deg, #10B981, #059669); }
+        .ar-card-icon.facility { background: linear-gradient(135deg, #6366F1, #4F46E5); }
+        .ar-card-icon.event { background: linear-gradient(135deg, #F59E0B, #D97706); }
+        .ar-card-icon.parking { background: linear-gradient(135deg, #3B82F6, #2563EB); }
+        .ar-card-icon.live { background: linear-gradient(135deg, #EF4444, #DC2626); }
+        
+        .ar-card-icon svg { width: 26px; height: 26px; fill: white; }
+        
+        .ar-card-content { flex: 1; min-width: 0; }
+        .ar-card-category { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .ar-card-name { font-size: 15px; font-weight: 700; color: white; margin-bottom: 4px; }
+        .ar-card-desc { font-size: 12px; color: rgba(255,255,255,0.7); line-height: 1.4; }
+        
+        .ar-card-action {
+            padding: 10px 16px;
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 20px;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        
+        /* 상세 페이지 */
+        .detail-page {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            z-index: 300;
+            transform: translateX(100%);
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            overflow-y: auto;
+        }
+        
+        .detail-page.open { transform: translateX(0); }
+        
+        .detail-header {
+            position: sticky;
+            top: 0;
+            padding: 50px 20px 16px;
+            background: rgba(26, 26, 46, 0.95);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            z-index: 10;
+        }
+        
+        .detail-back {
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        
+        .detail-back svg { width: 24px; height: 24px; fill: white; }
+        .detail-header-title { color: white; font-size: 18px; font-weight: 700; }
+        
+        .detail-content { padding: 20px; }
+        
+        .detail-hero {
+            width: 100%; height: 220px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+        
+        .detail-hero img { width: 100%; height: 100%; object-fit: cover; }
+        .detail-hero svg { width: 80px; height: 80px; fill: white; opacity: 0.5; }
+        
+        .detail-title { color: white; font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+        .detail-category { color: #6366f1; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+        .detail-description { color: rgba(255,255,255,0.8); font-size: 14px; line-height: 1.7; margin-bottom: 24px; }
+        
+        .detail-info-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+        
+        .detail-info-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+        }
+        
+        .detail-info-icon {
+            width: 40px; height: 40px;
+            border-radius: 10px;
+            background: rgba(99, 102, 241, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .detail-info-icon svg { width: 20px; height: 20px; fill: #6366f1; }
+        .detail-info-text { flex: 1; }
+        .detail-info-label { font-size: 11px; color: rgba(255,255,255,0.5); margin-bottom: 2px; }
+        .detail-info-value { font-size: 14px; color: white; font-weight: 500; }
+        
+        .detail-actions { display: flex; gap: 12px; }
+        
+        .detail-btn {
+            flex: 1;
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+        }
+        
+        .detail-btn.primary { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; }
+        .detail-btn.secondary { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
+        
+        /* 로딩 */
+        .loading {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            transition: opacity 0.5s, visibility 0.5s;
+        }
+        
+        .loading.hidden { opacity: 0; visibility: hidden; }
+        
+        .loading-spinner {
+            width: 60px; height: 60px;
+            border: 3px solid rgba(99, 102, 241, 0.3);
+            border-top-color: #6366f1;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .loading-text { color: white; font-size: 16px; margin-top: 20px; font-weight: 500; }
+        .loading-subtext { color: rgba(255,255,255,0.5); font-size: 13px; margin-top: 8px; }
+        
+        #debug {
+            position: absolute;
+            bottom: 120px; left: 10px;
+            background: rgba(0,0,0,0.85);
+            color: #0f0;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 10px;
+            border-radius: 8px;
+            max-width: 300px;
+            white-space: pre-wrap;
+            z-index: 100;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="videoCanvas"></canvas>
+        <canvas id="contourCanvas"></canvas>
+        <div id="overlay"></div>
+        
+        <!-- X-Ray 오버레이 (건물 투시) -->
+        <div class="xray-overlay" id="xrayOverlay">
+            <div class="xray-header">
+                <div class="xray-header-left">
+                    <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                    <span id="xrayTitle">층별 안내</span>
+                </div>
+                <button class="xray-close" onclick="closeXray()">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+            </div>
+            <div class="xray-floors" id="xrayFloors"></div>
+        </div>
+        
+        <!-- 상단 바 -->
+        <div class="top-bar">
+            <div class="top-left">
+                <button class="icon-btn" id="mapBtn" onclick="toggleMinimap()">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/>
+                    </svg>
+                </button>
+                
+                <!-- 미니맵 -->
+                <div class="minimap-container" id="minimapContainer">
+                    <button class="minimap-close" onclick="toggleMinimap()">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
+                    <div class="minimap">
+                        <div class="minimap-road horizontal" style="top: 35%;"></div>
+                        <div class="minimap-road horizontal" style="top: 65%;"></div>
+                        <div class="minimap-road vertical" style="left: 30%;"></div>
+                        <div class="minimap-road vertical" style="left: 70%;"></div>
+                        <div class="minimap-marker" style="top: 20%; left: 20%;">2</div>
+                        <div class="minimap-marker" style="top: 15%; left: 75%;">7</div>
+                        <div class="minimap-marker active" style="top: 45%; left: 65%;">4</div>
+                        <div class="minimap-marker" style="top: 75%; left: 25%;">3</div>
+                        <div class="minimap-marker" style="top: 80%; left: 70%;">5</div>
+                        <div class="minimap-current">
+                            <div class="minimap-current-pulse"></div>
+                            <div class="minimap-current-dot">
+                                <svg viewBox="0 0 24 24"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 모드 표시 -->
+            <div class="mode-indicator">
+                <svg viewBox="0 0 24 24">
+                    <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+                </svg>
+                일반
+            </div>
+        </div>
+        
+        <!-- 지금 이 순간 피드 (전체화면) -->
+        <div class="live-feed" id="liveFeed">
+            <div class="live-feed-header">
+                <div class="live-dot"></div>
+                <span>지금 이 순간</span>
+            </div>
+            <div class="live-feed-items" id="liveFeedItems"></div>
+            <div class="live-feed-footer">
+                <button class="live-feed-close" onclick="closeLiveFeed()">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    닫기
+                </button>
+            </div>
+        </div>
+        
+        <div id="debug"></div>
+        
+        <!-- 하단 컨트롤 -->
+        <div class="bottom-bar" id="bottomBar">
+            <div class="bottom-controls">
+                <button class="control-btn primary" onclick="resetMemory()">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                    </svg>
+                </button>
+                <button class="control-btn secondary" onclick="toggleDebug()">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        
+        <!-- AR 카드 패널 -->
+        <div class="ar-card-panel" id="arCardPanel">
+            <div class="panel-handle"></div>
+            <div class="panel-header">
+                <span class="panel-title" id="panelTitle">GS타워</span>
+                <button class="panel-close" onclick="closePanel()">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="ar-cards-container" id="arCardsContainer"></div>
+        </div>
+        
+        <!-- 상세 페이지 -->
+        <div class="detail-page" id="detailPage">
+            <div class="detail-header">
+                <button class="detail-back" onclick="closeDetail()">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                    </svg>
+                </button>
+                <span class="detail-header-title" id="detailHeaderTitle">상세보기</span>
+            </div>
+            <div class="detail-content" id="detailContent"></div>
+        </div>
+        
+        <!-- 로딩 -->
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">AR 모델 로딩 중...</div>
+            <div class="loading-subtext">카메라 권한을 허용해주세요</div>
+        </div>
+    </div>
+    
+    <script>
+        let video, overlay, model, videoCanvas, ctx, contourCanvas, contourCtx;
+        let isRunning = false, showDebug = false, isPanelOpen = false, isDetailOpen = false;
+        let isMinimapOpen = false, isLiveFeedOpen = false;
+        let currentBuilding = null, currentXrayTracker = null;
+        
+        // ========================================
+        // 건물 층별 데이터 (투시 모드용)
+        // ========================================
+        const buildingFloors = {
+            'GS타워': [
+                { floor: '40F', company: '스카이 라운지', logo: '☁️', status: '' },
+                { floor: '39F', company: '임원 회의실', logo: '👔', status: '' },
+                { floor: '38F', company: '대회의실', logo: '🎤', status: '' },
+                { floor: '35F', company: 'GS홀딩스', logo: 'GS', status: '' },
+                { floor: '30F', company: 'GS리테일', logo: 'GS', status: '' },
+                { floor: '25F', company: '공실', logo: '🏢', status: 'vacant', vacant: true },
+                { floor: '20F', company: 'GS에너지', logo: 'GS', status: '' },
+                { floor: '15F', company: '테크스타트업 A', logo: '🚀', status: 'hiring', highlight: true },
+                { floor: '12F', company: 'AI벤처스', logo: '🤖', status: 'hiring', highlight: true },
+                { floor: '10F', company: '공실', logo: '🏢', status: 'vacant', vacant: true },
+                { floor: '5F', company: '법무법인', logo: '⚖️', status: '' },
+                { floor: '3F', company: '회계법인', logo: '📊', status: '' },
+                { floor: '1F', company: '로비 / 카페', logo: '☕', status: '' },
+                { floor: 'B1', company: '푸드코트', logo: '🍽️', status: '' },
+                { floor: 'B2', company: '피트니스', logo: '💪', status: '' },
+                { floor: 'B3', company: '주차장', logo: '🚗', status: '' },
+            ],
+            '테헤란로 빌딩': [
+                { floor: '20F', company: '스타트업 허브', logo: '🚀', status: 'hiring', highlight: true },
+                { floor: '15F', company: '공실 (3호실)', logo: '🏢', status: 'vacant', vacant: true },
+                { floor: '10F', company: 'IT 컨설팅', logo: '💻', status: '' },
+                { floor: '5F', company: '디자인 에이전시', logo: '🎨', status: '' },
+                { floor: '1F', company: '편의점 / 카페', logo: '🏪', status: '' },
+            ]
+        };
+        
+        // ========================================
+        // 실시간 피드 데이터
+        // ========================================
+        let liveFeedData = [
+            { type: 'parking', icon: 'parking', text: 'B3 주차장 15자리 비었어요', time: '방금 전', action: '확인' },
+            { type: 'promo', icon: 'promo', text: '1층 카페 아메리카노 1+1 시작!', time: '2분 전', action: '쿠폰받기' },
+            { type: 'meeting', icon: 'meeting', text: '15층 회의실 C 예약 취소됨', time: '5분 전', action: '예약' },
+            { type: 'food', icon: 'food', text: 'B1 구내식당 A코스 매진 임박', time: '8분 전', action: '메뉴' },
+            { type: 'elevator', icon: 'elevator', text: '엘리베이터 대기 평균 2분', time: '10분 전', action: '' },
+            { type: 'delivery', icon: 'delivery', text: '무인택배함 3칸 남음', time: '15분 전', action: '위치' },
+        ];
+        
+        const liveFeedIcons = {
+            parking: '<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z"/>',
+            promo: '<path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/>',
+            meeting: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/>',
+            food: '<path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/>',
+            elevator: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3l4 4h-3v4h-2v-4H8l4-4zm4 9H8v-2h8v2z"/>',
+            delivery: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 16H6c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1h12c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1zm-6-10l-4 4h3v4h2v-4h3l-4-4z"/>'
+        };
+        
+        // ========================================
+        // 건물/AR 카드 데이터
+        // ========================================
+        const buildings = [
+            { name: 'GS타워', distance: 125, color: 'orange' },
+            { name: '테헤란로 빌딩', distance: 85, color: 'blue' },
+            { name: '역삼 타워', distance: 110, color: 'blue' },
+            { name: '강남파이낸스센터', distance: 200, color: 'green' },
+            { name: '삼성타운', distance: 180, color: 'orange' }
+        ];
+        
+        const arCardData = {
+            restaurant: [{ name: '스시 오마카세', desc: '신선한 제철 생선으로 만든 프리미엄 오마카세', floor: 'B1층', rating: '4.8', image: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=800&q=80' }],
+            cafe: [{ name: '루프탑 카페', desc: '도심 속 힐링 공간, 시그니처 라떼', floor: '40층', rating: '4.7', image: 'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=800&q=80' }],
+            parking: [{ name: '실시간 주차 현황', desc: 'B3층: 15/150 (여유) • B2층: 45/100 (보통)', floor: 'B2-B3층', status: '여유', image: '' }],
+            realestate: [{ name: '25층 공실', desc: '전용 85평, 강남역 조망 코너 유닛', floor: '25층', price: '보 5억/월 2,500만', image: 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=800&q=80' }],
+            company: [{ name: '테크스타트업 A', desc: 'AI 기반 물류 솔루션 기업 - 개발자 채용중!', floor: '15층', employees: '채용 중 🔥', image: 'https://images.unsplash.com/photo-1553877522-43269d4ea984?w=800&q=80' }],
+            facility: [{ name: '피트니스 센터', desc: '최신 운동 기구 및 GX룸', floor: 'B2층', hours: '06:00-23:00', image: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800&q=80' }],
+            live: [{ name: '지금 이 순간', desc: '실시간 건물 현황 피드 확인하기', floor: '', status: 'LIVE', image: '' }]
+        };
+        
+        const categoryIcons = {
+            restaurant: '<path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/>',
+            cafe: '<path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/>',
+            parking: '<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z"/>',
+            realestate: '<path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/>',
+            company: '<path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/>',
+            facility: '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>',
+            live: '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>'
+        };
+        
+        const categoryNames = {
+            restaurant: '음식점', cafe: '카페', parking: '주차장',
+            realestate: '부동산 공실', company: '입주기업', facility: '편의시설', live: '실시간'
+        };
+        
+        let nextBuildingIndex = 0, nextMemoryId = 1, nextTrackerId = 1;
+        let buildingMemory = [], activeTrackers = new Map();
+        
+        // ========================================
+        // 투시 모드 함수
+        // ========================================
+        function openXray(tracker) {
+            currentXrayTracker = tracker;
+            updateXrayOverlay();
+        }
+        
+        function closeXray() {
+            currentXrayTracker = null;
+            document.getElementById('xrayOverlay').classList.remove('active');
+        }
+        
+        function updateXrayOverlay() {
+            if (!currentXrayTracker) return;
+            
+            const xrayOverlay = document.getElementById('xrayOverlay');
+            const xrayTitle = document.getElementById('xrayTitle');
+            const xrayFloors = document.getElementById('xrayFloors');
+            
+            const buildingName = currentXrayTracker.building.name;
+            const floors = buildingFloors[buildingName] || buildingFloors['GS타워'];
+            
+            xrayTitle.textContent = `${buildingName} 층별 안내`;
+            
+            xrayFloors.innerHTML = floors.map(f => `
+                <div class="xray-floor ${f.vacant ? 'vacant' : ''} ${f.highlight ? 'highlight' : ''}" onclick="showFloorDetail('${f.floor}', '${f.company}')">
+                    <span class="xray-floor-num">${f.floor}</span>
+                    <span class="xray-floor-logo">${f.logo}</span>
+                    <span class="xray-floor-company">${f.company}</span>
+                    ${f.status ? `<span class="xray-floor-status ${f.status}">${f.status === 'hiring' ? '채용중' : '공실'}</span>` : ''}
+                </div>
+            `).join('');
+            
+            // 위치 업데이트
+            const box = currentXrayTracker.smoothBox;
+            xrayOverlay.style.left = `${box.x}px`;
+            xrayOverlay.style.top = `${box.y}px`;
+            xrayOverlay.style.width = `${Math.max(200, box.width)}px`;
+            xrayOverlay.style.height = `${Math.min(350, box.height)}px`;
+            xrayOverlay.classList.add('active');
+        }
+        
+        function showFloorDetail(floor, company) {
+            alert(`${floor} - ${company}\n\n상세 정보 페이지로 이동합니다.`);
+        }
+        
+        // ========================================
+        // 실시간 피드 함수
+        // ========================================
+        function openLiveFeed() {
+            isLiveFeedOpen = true;
+            document.getElementById('liveFeed').classList.add('open');
+            renderLiveFeed();
+        }
+        
+        function closeLiveFeed() {
+            isLiveFeedOpen = false;
+            document.getElementById('liveFeed').classList.remove('open');
+        }
+        
+        function renderLiveFeed() {
+            const container = document.getElementById('liveFeedItems');
+            container.innerHTML = liveFeedData.map((item, i) => `
+                <div class="live-item" style="animation-delay: ${i * 0.05}s">
+                    <div class="live-item-icon ${item.icon}">
+                        <svg viewBox="0 0 24 24">${liveFeedIcons[item.icon]}</svg>
+                    </div>
+                    <div class="live-item-content">
+                        <div class="live-item-text">${item.text}</div>
+                        <div class="live-item-time">${item.time}</div>
+                    </div>
+                    ${item.action ? `<button class="live-item-action">${item.action}</button>` : ''}
+                </div>
+            `).join('');
+        }
+        
+        // 피드 자동 업데이트 (시뮬레이션)
+        function simulateLiveFeed() {
+            setInterval(() => {
+                if (!isLiveFeedOpen) return;
+                
+                const newEvents = [
+                    { type: 'parking', icon: 'parking', text: `B3 주차장 ${Math.floor(Math.random() * 30) + 5}자리 비었어요`, time: '방금 전', action: '확인' },
+                    { type: 'elevator', icon: 'elevator', text: `엘리베이터 대기 평균 ${Math.floor(Math.random() * 3) + 1}분`, time: '방금 전', action: '' },
+                    { type: 'meeting', icon: 'meeting', text: `${Math.floor(Math.random() * 30) + 5}층 회의실 예약 가능`, time: '방금 전', action: '예약' },
+                ];
+                
+                const newEvent = newEvents[Math.floor(Math.random() * newEvents.length)];
+                liveFeedData.unshift(newEvent);
+                if (liveFeedData.length > 8) liveFeedData.pop();
+                renderLiveFeed();
+            }, 15000);
+        }
+        
+        // ========================================
+        // 기존 함수들
+        // ========================================
+        function toggleMinimap() {
+            isMinimapOpen = !isMinimapOpen;
+            document.getElementById('minimapContainer').classList.toggle('open', isMinimapOpen);
+            document.getElementById('mapBtn').classList.toggle('active', isMinimapOpen);
+        }
+        
+        function calculateIoU(box1, box2) {
+            const x1 = Math.max(box1.x, box2.x), y1 = Math.max(box1.y, box2.y);
+            const x2 = Math.min(box1.x + box1.width, box2.x + box2.width);
+            const y2 = Math.min(box1.y + box1.height, box2.y + box2.height);
+            if (x2 <= x1 || y2 <= y1) return 0;
+            const intersection = (x2 - x1) * (y2 - y1);
+            return intersection / (box1.width * box1.height + box2.width * box2.height - intersection);
+        }
+        
+        function extractColorHistogram(box) {
+            if (!ctx || !video) return null;
+            try {
+                videoCanvas.width = video.videoWidth; videoCanvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
+                const scaleX = video.videoWidth / window.innerWidth, scaleY = video.videoHeight / window.innerHeight;
+                const x = Math.max(0, Math.floor(box.x * scaleX)), y = Math.max(0, Math.floor(box.y * scaleY));
+                const w = Math.min(video.videoWidth - x, Math.floor(box.width * scaleX));
+                const h = Math.min(video.videoHeight - y, Math.floor(box.height * scaleY));
+                if (w <= 0 || h <= 0) return null;
+                const imageData = ctx.getImageData(x, y, w, h), data = imageData.data;
+                const histogram = new Array(12).fill(0);
+                let totalPixels = 0;
+                const step = Math.max(1, Math.floor(data.length / 4 / 1000));
+                for (let i = 0; i < data.length; i += 4 * step) {
+                    histogram[Math.floor(data[i] / 64)] += 1;
+                    histogram[4 + Math.floor(data[i + 1] / 64)] += 1;
+                    histogram[8 + Math.floor(data[i + 2] / 64)] += 1;
+                    totalPixels++;
+                }
+                if (totalPixels > 0) for (let i = 0; i < 12; i++) histogram[i] /= totalPixels;
+                return { histogram };
+            } catch (e) { return null; }
+        }
+        
+        function findBuildingFromMemory(box, excludeIds) {
+            const normX = (box.x + box.width / 2) / window.innerWidth;
+            const normY = (box.y + box.height / 2) / window.innerHeight;
+            const colorInfo = extractColorHistogram(box);
+            
+            let bestMatch = null, bestScore = 0.35;
+            
+            for (const memory of buildingMemory) {
+                if (excludeIds.has(memory.id)) continue;
+                
+                const dx = normX - memory.lastPosition.x, dy = normY - memory.lastPosition.y;
+                const posScore = Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy) * 2);
+                
+                let colorScore = 0.5;
+                if (colorInfo && memory.colorHistogram) {
+                    let sim = 0;
+                    for (let i = 0; i < 12; i++) sim += 1 - Math.abs(colorInfo.histogram[i] - memory.colorHistogram[i]);
+                    colorScore = sim / 12;
+                }
+                
+                const totalScore = posScore * 0.4 + colorScore * 0.6;
+                if (totalScore > bestScore) { bestScore = totalScore; bestMatch = memory; }
+            }
+            
+            if (bestMatch) bestMatch.wasRecognized = true;
+            return bestMatch;
+        }
+        
+        function registerBuilding(box) {
+            const building = buildings[nextBuildingIndex % buildings.length];
+            nextBuildingIndex++;
+            const colorInfo = extractColorHistogram(box);
+            const entry = {
+                id: nextMemoryId++, building,
+                lastPosition: { x: (box.x + box.width / 2) / window.innerWidth, y: (box.y + box.height / 2) / window.innerHeight },
+                colorHistogram: colorInfo?.histogram || null,
+                lastSeen: Date.now(), wasRecognized: false
+            };
+            buildingMemory.push(entry);
+            return entry;
+        }
+        
+        function updateMemory(memory, box) {
+            const normX = (box.x + box.width / 2) / window.innerWidth;
+            const normY = (box.y + box.height / 2) / window.innerHeight;
+            memory.lastPosition.x = memory.lastPosition.x * 0.7 + normX * 0.3;
+            memory.lastPosition.y = memory.lastPosition.y * 0.7 + normY * 0.3;
+            const colorInfo = extractColorHistogram(box);
+            if (colorInfo && memory.colorHistogram) {
+                for (let i = 0; i < 12; i++) memory.colorHistogram[i] = memory.colorHistogram[i] * 0.8 + colorInfo.histogram[i] * 0.2;
+            }
+            memory.lastSeen = Date.now();
+        }
+        
+        function createLabelElement(building, memoryId, trackerId, wasRecognized = false) {
+            const labelEl = document.createElement('div');
+            labelEl.className = 'building-label fade-in';
+            labelEl.dataset.memoryId = memoryId;
+            labelEl.dataset.trackerId = trackerId;
+            
+            labelEl.innerHTML = `
+                <div class="label-card ${building.color}">
+                    ${wasRecognized ? '<div class="label-recognized"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>' : ''}
+                    <span class="label-name">${building.name}</span>
+                    <span class="label-distance">${building.distance}m</span>
+                </div>
+                <div class="label-actions">
+                    <div class="label-pin ${building.color}" onclick="event.stopPropagation(); openPanelByTracker(${trackerId})">
+                        <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                    </div>
+                    <button class="label-xray" onclick="event.stopPropagation(); openXrayByTracker(${trackerId})">
+                        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                    </button>
+                </div>
+            `;
+            
+            overlay.appendChild(labelEl);
+            return labelEl;
+        }
+        
+        function openPanelByTracker(trackerId) {
+            const tracker = activeTrackers.get(trackerId);
+            if (tracker) openPanel(tracker.building);
+        }
+        
+        function openXrayByTracker(trackerId) {
+            const tracker = activeTrackers.get(trackerId);
+            if (tracker) {
+                // 투시 버튼 토글
+                const btn = tracker.element.querySelector('.label-xray');
+                const isActive = btn.classList.contains('active');
+                
+                // 모든 투시 버튼 비활성화
+                document.querySelectorAll('.label-xray').forEach(b => b.classList.remove('active'));
+                
+                if (isActive) {
+                    closeXray();
+                } else {
+                    btn.classList.add('active');
+                    openXray(tracker);
+                }
+            }
+        }
+        
+        function createTracker(box, memoryEntry) {
+            const trackerId = nextTrackerId++;
+            const tracker = {
+                id: trackerId, memoryId: memoryEntry.id, building: memoryEntry.building,
+                box: { ...box }, smoothBox: { ...box },
+                element: createLabelElement(memoryEntry.building, memoryEntry.id, trackerId, memoryEntry.wasRecognized),
+                lastSeen: Date.now(), wasRecognized: memoryEntry.wasRecognized
+            };
+            return tracker;
+        }
+        
+        function openPanel(building) {
+            currentBuilding = building;
+            isPanelOpen = true;
+            document.getElementById('panelTitle').textContent = building.name;
+            document.getElementById('arCardPanel').classList.add('open');
+            document.getElementById('bottomBar').style.display = 'none';
+            
+            const container = document.getElementById('arCardsContainer');
+            container.innerHTML = '';
+            
+            const categories = ['live', 'parking', 'realestate', 'company', 'restaurant', 'cafe', 'facility'];
+            categories.forEach(cat => {
+                const items = arCardData[cat];
+                if (items && items.length > 0) {
+                    container.appendChild(createARCard(cat, items[0]));
+                }
+            });
+        }
+        
+        function createARCard(category, item) {
+            const card = document.createElement('div');
+            card.className = 'ar-card';
+            let extraInfo = item.rating ? `⭐ ${item.rating}` : item.price || (item.employees ? `${item.employees}` : '') || (item.hours ? `🕐 ${item.hours}` : '') || (item.status ? `🔴 ${item.status}` : '');
+            
+            card.innerHTML = `
+                <div class="ar-card-icon ${category}"><svg viewBox="0 0 24 24">${categoryIcons[category]}</svg></div>
+                <div class="ar-card-content">
+                    <div class="ar-card-category">${categoryNames[category]}</div>
+                    <div class="ar-card-name">${item.name}</div>
+                    <div class="ar-card-desc">${item.desc} ${extraInfo ? '· ' + extraInfo : ''}</div>
+                </div>
+                <button class="ar-card-action" onclick="${category === 'live' ? 'openLiveFeed(); closePanel();' : `openDetail('${category}', '${item.name}')`}">${category === 'live' ? '피드 보기' : '상세보기'}</button>
+            `;
+            return card;
+        }
+        
+        function closePanel() {
+            isPanelOpen = false;
+            document.getElementById('arCardPanel').classList.remove('open');
+            document.getElementById('bottomBar').style.display = 'flex';
+        }
+        
+        function openDetail(category, name) {
+            isDetailOpen = true;
+            video.style.filter = 'blur(10px) brightness(0.3)';
+            document.getElementById('detailPage').classList.add('open');
+            document.getElementById('detailHeaderTitle').textContent = name;
+            const item = arCardData[category]?.find(i => i.name === name) || arCardData[category]?.[0];
+            if (!item) return;
+            
+            let infoHtml = '';
+            if (item.floor) infoHtml += `<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">위치</div><div class="detail-info-value">${item.floor}</div></div></div>`;
+            if (item.rating) infoHtml += `<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">평점</div><div class="detail-info-value">${item.rating} / 5.0</div></div></div>`;
+            if (item.price) infoHtml += `<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">임대료</div><div class="detail-info-value">${item.price}</div></div></div>`;
+            
+            document.getElementById('detailContent').innerHTML = `
+                <div class="detail-hero">${item.image ? `<img src="${item.image}" alt="${item.name}">` : `<svg viewBox="0 0 24 24">${categoryIcons[category]}</svg>`}</div>
+                <div class="detail-title">${item.name}</div>
+                <div class="detail-category">${categoryNames[category]} · ${currentBuilding?.name || ''}</div>
+                <div class="detail-description">${item.desc}</div>
+                <div class="detail-info-list">${infoHtml}</div>
+                <div class="detail-actions">
+                    <button class="detail-btn secondary" onclick="closeDetail()">닫기</button>
+                    <button class="detail-btn primary">${category === 'realestate' ? '문의하기' : '예약하기'}</button>
+                </div>
+            `;
+        }
+        
+        function closeDetail() {
+            isDetailOpen = false;
+            video.style.filter = '';
+            document.getElementById('detailPage').classList.remove('open');
+        }
+        
+        function toggleDebug() {
+            showDebug = !showDebug;
+            document.getElementById('debug').style.display = showDebug ? 'block' : 'none';
+        }
+        
+        function resetMemory() {
+            buildingMemory = [];
+            nextBuildingIndex = 0;
+            nextMemoryId = 1;
+            activeTrackers.forEach(t => t.element.remove());
+            activeTrackers.clear();
+            nextTrackerId = 1;
+            closeXray();
+        }
+        
+        function updateDebug() {
+            if (!showDebug) return;
+            document.getElementById('debug').textContent = `📦 등록: ${buildingMemory.length} | 🎯 활성: ${activeTrackers.size}`;
+        }
+        
+        async function init() {
+            video = document.getElementById('video');
+            overlay = document.getElementById('overlay');
+            overlay.classList.add('interactive');
+            videoCanvas = document.getElementById('videoCanvas');
+            ctx = videoCanvas.getContext('2d', { willReadFrequently: true });
+            contourCanvas = document.getElementById('contourCanvas');
+            contourCtx = contourCanvas.getContext('2d', { willReadFrequently: true });
+            
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                await video.play();
+                document.querySelector('.loading-text').textContent = 'AI 모델 로딩 중...';
+                model = await cocoSsd.load();
+                document.getElementById('loading').classList.add('hidden');
+                isRunning = true;
+                simulateLiveFeed();
+                detectFrame();
+            } catch (error) {
+                document.querySelector('.loading-text').textContent = '카메라 접근 실패';
+                document.querySelector('.loading-subtext').textContent = 'HTTPS 또는 localhost에서 실행해주세요';
+            }
+        }
+        
+        async function detectFrame() {
+            if (!isRunning) return;
+            try {
+                const predictions = await model.detect(video);
+                const scaleX = window.innerWidth / video.videoWidth;
+                const scaleY = window.innerHeight / video.videoHeight;
+                
+                let detectedBoxes = predictions.filter(p => p.class === 'cup' && p.score >= 0.6).map(p => ({
+                    x: p.bbox[0] * scaleX, y: p.bbox[1] * scaleY,
+                    width: p.bbox[2] * scaleX, height: p.bbox[3] * scaleY, score: p.score
+                }));
+                
+                const now = Date.now();
+                const matchedTrackerIds = new Set(), matchedDetectionIdxs = new Set();
+                
+                for (const [trackerId, tracker] of activeTrackers) {
+                    let bestIoU = 0.2, bestIdx = -1;
+                    detectedBoxes.forEach((box, idx) => {
+                        if (matchedDetectionIdxs.has(idx)) return;
+                        const iou = calculateIoU(tracker.box, box);
+                        if (iou > bestIoU) { bestIoU = iou; bestIdx = idx; }
+                    });
+                    if (bestIdx >= 0) {
+                        const box = detectedBoxes[bestIdx];
+                        tracker.box = { ...box }; tracker.lastSeen = now;
+                        tracker.smoothBox.x += (box.x - tracker.smoothBox.x) * 0.7;
+                        tracker.smoothBox.y += (box.y - tracker.smoothBox.y) * 0.7;
+                        tracker.smoothBox.width += (box.width - tracker.smoothBox.width) * 0.7;
+                        tracker.smoothBox.height += (box.height - tracker.smoothBox.height) * 0.7;
+                        const memory = buildingMemory.find(m => m.id === tracker.memoryId);
+                        if (memory) updateMemory(memory, box);
+                        matchedTrackerIds.add(trackerId); matchedDetectionIdxs.add(bestIdx);
+                    }
+                }
+                
+                const usedMemoryIds = new Set();
+                activeTrackers.forEach(t => usedMemoryIds.add(t.memoryId));
+                
+                detectedBoxes.forEach((box, idx) => {
+                    if (matchedDetectionIdxs.has(idx)) return;
+                    let memoryEntry = findBuildingFromMemory(box, usedMemoryIds);
+                    if (!memoryEntry) memoryEntry = registerBuilding(box);
+                    else updateMemory(memoryEntry, box);
+                    usedMemoryIds.add(memoryEntry.id);
+                    const tracker = createTracker(box, memoryEntry);
+                    activeTrackers.set(tracker.id, tracker);
+                    matchedTrackerIds.add(tracker.id);
+                });
+                
+                for (const [trackerId, tracker] of activeTrackers) {
+                    if (!matchedTrackerIds.has(trackerId)) {
+                        if (now - tracker.lastSeen > 500) {
+                            tracker.element.remove();
+                            activeTrackers.delete(trackerId);
+                            if (currentXrayTracker?.id === trackerId) closeXray();
+                        } else tracker.element.style.opacity = '0';
+                    }
+                }
+                
+                for (const [trackerId, tracker] of activeTrackers) {
+                    if (matchedTrackerIds.has(trackerId)) {
+                        tracker.element.style.left = `${tracker.smoothBox.x + tracker.smoothBox.width / 2}px`;
+                        tracker.element.style.top = `${tracker.smoothBox.y}px`;
+                        tracker.element.style.transform = 'translate(-50%, -100%)';
+                        tracker.element.style.opacity = '1';
+                    }
+                }
+                
+                // 투시 모드 위치 업데이트
+                if (currentXrayTracker && activeTrackers.has(currentXrayTracker.id)) {
+                    updateXrayOverlay();
+                }
+                
+                updateDebug();
+            } catch (error) { console.error('감지 오류:', error); }
+            requestAnimationFrame(detectFrame);
+        }
+        
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
