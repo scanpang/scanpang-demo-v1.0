@@ -1,0 +1,3172 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR 건물 v59 - COCO 리매핑</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+    <script>
+        // OpenCV 로드 완료 체크 (전역)
+        var isOpenCvReady = false;
+        function onOpenCvReady() {
+            isOpenCvReady = true;
+            console.log('OpenCV.js loaded!');
+        }
+        // OpenCV 로드 대기
+        function waitForOpenCV() {
+            if (typeof cv !== 'undefined' && cv.Mat) {
+                onOpenCvReady();
+            } else {
+                setTimeout(waitForOpenCV, 100);
+            }
+        }
+        waitForOpenCV();
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Noto Sans KR',sans-serif;background:#000;overflow:hidden}
+        #container{position:relative;width:100vw;height:100vh}
+        #video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:1}
+        #videoCanvas{display:none}
+        #overlay{position:absolute;top:0;left:0;width:100%;height:100%;z-index:10;pointer-events:none}
+        
+        .top-bar{position:absolute;top:0;left:0;right:0;padding:40px 20px 20px;display:flex;justify-content:space-between;align-items:flex-start;z-index:100;pointer-events:none}
+        .top-left{display:flex;flex-direction:column;gap:12px;pointer-events:auto}
+        .top-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:auto}
+        .icon-btn{width:48px;height:48px;background:rgba(255,255,255,0.95);border-radius:50%;display:flex;align-items:center;justify-content:center;border:none;box-shadow:0 2px 12px rgba(0,0,0,0.15)}
+        .icon-btn svg{width:24px;height:24px;fill:#333}
+        .detect-info{padding:8px 12px;background:rgba(0,0,0,0.7);border-radius:12px;font-size:11px;color:rgba(255,255,255,0.9);font-weight:500}
+        
+        /* 리얼 미니맵 */
+        .minimap-container{width:220px;height:220px;border-radius:20px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.3);display:none;position:relative}
+        .minimap-container.open{display:block}
+        .minimap-close{position:absolute;top:10px;left:10px;width:28px;height:28px;background:rgba(0,0,0,0.6);border-radius:50%;border:none;display:flex;align-items:center;justify-content:center;z-index:10}
+        .minimap-close svg{width:16px;height:16px;fill:white}
+        .minimap{width:100%;height:100%;background:#F5F1EB;position:relative}
+        .minimap-block{position:absolute;background:#E8E4DE;border:1px solid #D5D0C8}
+        .minimap-block.highlight{background:#FFE4CC;border-color:#FFB380}
+        .minimap-road{position:absolute;background:#FFFFFF}
+        .minimap-road.horizontal{height:12px;left:0;right:0}
+        .minimap-road.vertical{width:12px;top:0;bottom:0}
+        .minimap-road.small{background:#FAFAFA}
+        .minimap-road.small.horizontal{height:6px}
+        .minimap-road.small.vertical{width:6px}
+        .minimap-subway{position:absolute;height:6px;border-radius:3px}
+        .minimap-subway.red{background:#C8102E}
+        .minimap-subway.blue{background:#0052A4}
+        .minimap-station{position:absolute;transform:translate(-50%,-50%)}
+        .minimap-station-dot{width:18px;height:18px;background:white;border:3px solid #C8102E;border-radius:50%}
+        .minimap-station-label{position:absolute;top:22px;left:50%;transform:translateX(-50%);background:#C8102E;color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap}
+        .minimap-poi{position:absolute;transform:translate(-50%,-50%);font-size:10px;color:#666;font-weight:500;white-space:nowrap;background:rgba(255,255,255,0.9);padding:2px 5px;border-radius:3px}
+        .minimap-marker{position:absolute;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#3B82F6,#2563EB);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;transform:translate(-50%,-50%);border:2px solid white;box-shadow:0 2px 8px rgba(59,130,246,0.4)}
+        .minimap-marker.active{background:linear-gradient(135deg,#F97316,#EA580C)}
+        .minimap-marker.green{background:linear-gradient(135deg,#22C55E,#16A34A)}
+        .minimap-current{position:absolute;top:50%;left:50%;width:44px;height:44px;transform:translate(-50%,-50%);z-index:5}
+        .minimap-current-dot{width:44px;height:44px;background:linear-gradient(135deg,#3B82F6,#1D4ED8);border-radius:50%;display:flex;align-items:center;justify-content:center;border:3px solid white;box-shadow:0 3px 12px rgba(59,130,246,0.5)}
+        .minimap-current-dot svg{width:22px;height:22px;fill:white}
+        .minimap-current-pulse{position:absolute;top:50%;left:50%;width:44px;height:44px;background:rgba(59,130,246,0.25);border-radius:50%;transform:translate(-50%,-50%);animation:pulse 2s infinite}
+        @keyframes pulse{0%{transform:translate(-50%,-50%) scale(1);opacity:1}100%{transform:translate(-50%,-50%) scale(2.5);opacity:0}}
+        
+        .mode-ind{padding:10px 16px;background:rgba(255,255,255,0.95);border-radius:20px;font-size:14px;font-weight:500;pointer-events:auto;display:flex;align-items:center;gap:6px;box-shadow:0 2px 12px rgba(0,0,0,0.15)}
+        .mode-ind svg{width:16px;height:16px;fill:#6366f1}
+        
+        .bottom-bar{position:absolute;bottom:0;left:0;right:0;padding:20px 20px 40px;display:flex;justify-content:center;z-index:200;pointer-events:none}
+        .bottom-controls{display:flex;gap:8px;padding:8px;background:rgba(255,255,255,0.95);border-radius:30px;pointer-events:auto;box-shadow:0 2px 20px rgba(0,0,0,0.15)}
+        .ctrl-btn{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:none}
+        .ctrl-btn.pri{background:linear-gradient(135deg,#6366f1,#4f46e5)}
+        .ctrl-btn.pri svg{fill:white}
+        .ctrl-btn svg{width:22px;height:22px}
+        
+        /* 건물 라벨 */
+        .building-label{position:absolute;display:flex;flex-direction:column;align-items:center;z-index:50;pointer-events:auto;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+        .label-card{padding:8px 14px;border-radius:8px;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,0.2);pointer-events:auto}
+        .label-card.orange{background:#F97316}
+        .label-card.blue{background:#3B82F6}
+        .label-card.purple{background:#8B5CF6}
+        .label-card.green{background:#22C55E}
+        .label-name{color:white;font-size:13px;font-weight:700;pointer-events:none}
+        .label-dist{color:rgba(255,255,255,0.9);font-size:11px;margin-top:2px;pointer-events:none}
+        .label-actions{display:flex;gap:8px;margin-top:8px;pointer-events:auto}
+        .act-btn{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.2);position:relative;pointer-events:auto;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+        .act-btn::before{content:'';position:absolute;top:-12px;left:-12px;right:-12px;bottom:-12px}
+        .act-btn svg{width:16px;height:16px;fill:white;pointer-events:none}
+        .act-btn.pin.orange{background:#F97316}
+        .act-btn.pin.blue{background:#3B82F6}
+        .act-btn.pin.purple{background:#8B5CF6}
+        .act-btn.pin.green{background:#22C55E}
+        
+        /* 글래스모피즘 패널 */
+        .panel{position:absolute;bottom:0;left:0;right:0;height:75vh;background:rgba(20,20,40,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px 24px 0 0;z-index:150;transform:translateY(100%);transition:transform 0.4s cubic-bezier(0.16,1,0.3,1);display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.1);border-bottom:none}
+        .panel.open{transform:translateY(0)}
+        .panel-handle{width:40px;height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin:12px auto 0}
+        .panel-head{padding:16px 20px;display:flex;justify-content:space-between;align-items:center}
+        .panel-title{color:white;font-size:18px;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,0.3)}
+        .panel-close{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.15);border:none;display:flex;align-items:center;justify-content:center}
+        .panel-close svg{width:20px;height:20px;fill:white}
+        .panel-tabs{display:flex;gap:8px;padding:0 20px 16px}
+        .panel-tab{flex:1;padding:12px;border:none;border-radius:12px;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:13px;font-weight:600;transition:all 0.2s;border:1px solid rgba(255,255,255,0.08)}
+        .panel-tab.active{background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;border-color:transparent}
+        .panel-cards{flex:1;padding:16px 20px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
+        
+        /* 글래스모피즘 카드 */
+        .card{background:rgba(255,255,255,0.08);backdrop-filter:blur(10px);border-radius:12px;padding:12px;display:flex;gap:10px;align-items:center;border:1px solid rgba(255,255,255,0.1)}
+        .card.vacant{background:rgba(34,197,94,0.2);border:1px solid rgba(34,197,94,0.4)}
+        .card.highlight{background:rgba(249,115,22,0.2);border:1px solid rgba(249,115,22,0.4)}
+        
+        /* 라이브 인디케이터 (탭과 카드 사이) */
+        .live-indicator{display:none;align-items:center;gap:6px;padding:8px 20px;color:rgba(255,255,255,0.8);font-size:11px;font-weight:500}
+        .live-indicator.show{display:flex}
+        .live-dot{width:6px;height:6px;background:#EF4444;border-radius:50%;animation:livePulse 1.5s ease-in-out infinite}
+        @keyframes livePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.6;transform:scale(0.9)}}
+        .card.new-feed{animation:newFeedSlide 0.5s ease-out}
+        @keyframes newFeedSlide{from{opacity:0;transform:translateY(-20px);background:rgba(34,197,94,0.15)}to{opacity:1;transform:translateY(0)}}
+        
+        .card-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .card-icon.parking{background:linear-gradient(135deg,#3B82F6,#2563EB)}
+        .card-icon.promo{background:linear-gradient(135deg,#22C55E,#16A34A)}
+        .card-icon.meeting{background:linear-gradient(135deg,#8B5CF6,#7C3AED)}
+        .card-icon.food{background:linear-gradient(135deg,#F97316,#EA580C)}
+        .card-icon.elevator{background:linear-gradient(135deg,#EC4899,#DB2777)}
+        .card-icon.delivery{background:linear-gradient(135deg,#F59E0B,#D97706)}
+        .card-icon.restaurant{background:linear-gradient(135deg,#F97316,#EA580C)}
+        .card-icon.cafe{background:linear-gradient(135deg,#8B5CF6,#7C3AED)}
+        .card-icon.realestate{background:linear-gradient(135deg,#3B82F6,#2563EB)}
+        .card-icon.company{background:linear-gradient(135deg,#10B981,#059669)}
+        .card-icon.facility{background:linear-gradient(135deg,#6366F1,#4F46E5)}
+        .card-icon svg{width:18px;height:18px;fill:white}
+        .card-content{flex:1;min-width:0}
+        .card-cat{font-size:10px;font-weight:600;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;display:flex;align-items:center;gap:6px}
+        .card-name{font-size:13px;font-weight:600;color:white;margin-bottom:2px}
+        .card-desc{font-size:11px;color:rgba(255,255,255,0.7);line-height:1.3}
+        .card-action{padding:8px 12px;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);border-radius:16px;color:white;font-size:11px;font-weight:600;white-space:nowrap}
+        
+        /* 영업중/종료 뱃지 */
+        .open-badge{background:rgba(34,197,94,0.3);color:#86EFAC;padding:2px 6px;border-radius:4px;font-size:9px}
+        .closed-badge{background:rgba(239,68,68,0.3);color:#FCA5A5;padding:2px 6px;border-radius:4px;font-size:9px}
+        
+        /* 층별모드 스타일 */
+        .floor-num{min-width:50px;padding:8px 0;text-align:center;font-size:12px;font-weight:700;color:white;background:rgba(255,255,255,0.1);border-radius:8px;flex-shrink:0}
+        .floor-icons{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+        .floor-icon{font-size:14px}
+        .floor-logo{width:36px;height:36px;border-radius:10px;background:rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+        .floor-status{padding:4px 10px;border-radius:10px;font-size:10px;font-weight:600;color:white;flex-shrink:0}
+        .floor-status.hiring{background:#F97316}
+        .floor-status.vacant-status{background:#22C55E}
+        
+        /* 상세 페이지 */
+        .detail-page{position:absolute;top:0;left:0;width:100%;height:100%;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);z-index:300;transform:translateX(100%);transition:transform 0.4s cubic-bezier(0.16,1,0.3,1);overflow-y:auto}
+        .detail-page.open{transform:translateX(0)}
+        .detail-header{position:sticky;top:0;padding:50px 20px 16px;background:rgba(26,26,46,0.95);backdrop-filter:blur(10px);display:flex;align-items:center;gap:12px;z-index:10}
+        .detail-back{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,0.1);border:none;display:flex;align-items:center;justify-content:center}
+        .detail-back svg{width:24px;height:24px;fill:white}
+        .detail-header-title{color:white;font-size:18px;font-weight:700}
+        .detail-content{padding:20px}
+        .detail-hero{width:100%;height:220px;border-radius:16px;background:linear-gradient(135deg,#6366f1,#4f46e5);display:flex;align-items:center;justify-content:center;margin-bottom:20px;overflow:hidden}
+        .detail-hero img{width:100%;height:100%;object-fit:cover}
+        .detail-hero svg{width:80px;height:80px;fill:white;opacity:0.5}
+        .detail-title{color:white;font-size:24px;font-weight:700;margin-bottom:8px}
+        .detail-category{color:#6366f1;font-size:13px;font-weight:600;margin-bottom:16px}
+        .detail-description{color:rgba(255,255,255,0.8);font-size:14px;line-height:1.7;margin-bottom:24px}
+        .detail-info-list{display:flex;flex-direction:column;gap:12px;margin-bottom:24px}
+        .detail-info-item{display:flex;align-items:center;gap:12px;padding:14px;background:rgba(255,255,255,0.05);border-radius:12px}
+        .detail-info-icon{width:40px;height:40px;border-radius:10px;background:rgba(99,102,241,0.2);display:flex;align-items:center;justify-content:center}
+        .detail-info-icon svg{width:20px;height:20px;fill:#6366f1}
+        .detail-info-text{flex:1}
+        .detail-info-label{font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:2px}
+        .detail-info-value{font-size:14px;color:white;font-weight:500}
+        .detail-actions{display:flex;gap:12px}
+        .detail-btn{flex:1;padding:16px;border-radius:12px;font-size:14px;font-weight:600;border:none}
+        .detail-btn.primary{background:linear-gradient(135deg,#6366f1,#4f46e5);color:white}
+        .detail-btn.secondary{background:rgba(255,255,255,0.1);color:white;border:1px solid rgba(255,255,255,0.2)}
+        
+        .loading{position:absolute;inset:0;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:500}
+        .loading.hidden{display:none}
+        .spinner{width:60px;height:60px;border:3px solid rgba(99,102,241,0.3);border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .loading-text{color:white;font-size:16px;margin-top:20px;font-weight:500}
+        .loading-subtext{color:rgba(255,255,255,0.5);font-size:13px;margin-top:8px}
+        
+        /* 모드 전환 버튼 */
+        .mode-switcher{display:flex;gap:8px;padding:8px;background:rgba(0,0,0,0.6);backdrop-filter:blur(10px);border-radius:30px;pointer-events:auto}
+        .mode-btn{display:flex;align-items:center;gap:6px;padding:12px 20px;border-radius:24px;border:none;font-size:13px;font-weight:600;transition:all 0.3s;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+        .mode-btn.normal{background:transparent;color:rgba(255,255,255,0.6)}
+        .mode-btn.normal.active{background:linear-gradient(135deg,#6366f1,#4f46e5);color:white}
+        .mode-btn.reward{background:transparent;color:rgba(255,255,255,0.6)}
+        .mode-btn.reward.active{background:linear-gradient(135deg,#F59E0B,#D97706);color:white}
+        .mode-btn svg{width:18px;height:18px;fill:currentColor}
+        
+        /* 리워드모드 - 에임 */
+        .aim-crosshair{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:80px;height:80px;pointer-events:none;z-index:80;display:none}
+        .aim-crosshair.show{display:flex;flex-direction:column;align-items:center;justify-content:center}
+        .aim-circle{width:60px;height:60px;border:2px solid rgba(255,255,255,0.8);border-radius:50%;position:relative}
+        .aim-circle::before,.aim-circle::after{content:'';position:absolute;background:rgba(255,255,255,0.8)}
+        .aim-circle::before{width:20px;height:2px;top:50%;left:50%;transform:translate(-50%,-50%)}
+        .aim-circle::after{width:2px;height:20px;top:50%;left:50%;transform:translate(-50%,-50%)}
+        .aim-dot{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:6px;height:6px;background:#F59E0B;border-radius:50%}
+        .aim-crosshair.locked .aim-circle{border-color:#22C55E}
+        .aim-crosshair.locked .aim-dot{background:#22C55E}
+        .aim-countdown{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:24px;font-weight:700;color:#F59E0B;text-shadow:0 0 10px rgba(0,0,0,0.8);display:none}
+        .aim-crosshair.counting .aim-countdown{display:block;animation:countPulse 0.3s ease-out}
+        .aim-crosshair.counting .aim-dot{display:none}
+        @keyframes countPulse{0%{transform:translate(-50%,-50%) scale(1.5)}100%{transform:translate(-50%,-50%) scale(1)}}
+        
+        /* 리워드모드 - 타겟 */
+        .reward-target{position:absolute;display:flex;flex-direction:column;align-items:center;z-index:50;pointer-events:none}
+        .target-icon{width:50px;height:50px;position:relative}
+        .target-ring{width:50px;height:50px;border:3px solid #F59E0B;border-radius:50%;position:absolute;animation:targetSpin 3s linear infinite}
+        .target-ring::before{content:'';position:absolute;top:-3px;left:50%;transform:translateX(-50%);width:8px;height:8px;background:#F59E0B;border-radius:50%}
+        @keyframes targetSpin{to{transform:rotate(360deg)}}
+        .target-inner{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;border:2px solid #F59E0B;border-radius:50%}
+        .target-dot{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:8px;height:8px;background:#F59E0B;border-radius:50%}
+        
+        /* 리워드 라벨 */
+        .reward-label{margin-top:8px;padding:8px 12px;background:rgba(30,30,50,0.9);border:1px solid #F59E0B;border-radius:10px;text-align:center}
+        .reward-quest{color:#F59E0B;font-size:10px;font-weight:600;margin-bottom:4px}
+        .reward-title{color:white;font-size:12px;font-weight:600;margin-bottom:4px}
+        .reward-info{display:flex;align-items:center;justify-content:center;gap:8px}
+        .reward-info span{display:flex;align-items:center;gap:4px;font-size:11px;color:rgba(255,255,255,0.8)}
+        .reward-info svg{width:14px;height:14px;fill:#F59E0B}
+        
+        /* 퀘스트 진행 팝업 */
+        .quest-popup{position:absolute;top:20%;left:50%;transform:translateX(-50%);padding:16px 24px;background:rgba(30,30,50,0.95);border:2px solid #F59E0B;border-radius:16px;text-align:center;z-index:200;display:none}
+        .quest-popup.show{display:block;animation:popIn 0.3s ease-out}
+        @keyframes popIn{from{opacity:0;transform:translateX(-50%) scale(0.8)}to{opacity:1;transform:translateX(-50%) scale(1)}}
+        .quest-progress{color:#F59E0B;font-size:14px;font-weight:700;margin-bottom:4px}
+        .quest-message{color:white;font-size:12px}
+        
+        /* 퀘스트 완료 */
+        .quest-complete{position:absolute;inset:0;background:rgba(0,0,0,0.8);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:250}
+        .quest-complete.show{display:flex;animation:fadeIn 0.3s ease-out}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+        .complete-icon{width:80px;height:80px;background:linear-gradient(135deg,#F59E0B,#D97706);border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:20px;animation:bounceIn 0.5s ease-out}
+        @keyframes bounceIn{0%{transform:scale(0)}50%{transform:scale(1.2)}100%{transform:scale(1)}}
+        .complete-icon svg{width:40px;height:40px;fill:white}
+        .complete-title{color:white;font-size:24px;font-weight:700;margin-bottom:8px}
+        .complete-reward{display:flex;align-items:center;gap:8px;color:#F59E0B;font-size:32px;font-weight:700;margin-bottom:24px}
+        .complete-reward svg{width:32px;height:32px;fill:#F59E0B}
+        .complete-btn{padding:16px 48px;background:linear-gradient(135deg,#F59E0B,#D97706);border:none;border-radius:30px;color:white;font-size:16px;font-weight:600}
+        
+        /* 줌 인디케이터 */
+        .zoom-indicator{position:absolute;bottom:120px;left:50%;transform:translateX(-50%);padding:8px 16px;background:rgba(0,0,0,0.7);border-radius:20px;color:white;font-size:14px;font-weight:600;z-index:100;opacity:0;transition:opacity 0.3s;pointer-events:none}
+        .zoom-indicator.show{opacity:1}
+        
+        /* 광고 팝업 */
+        .ad-popup{position:absolute;inset:0;background:rgba(0,0,0,0.95);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:400}
+        .ad-popup.show{display:flex;animation:fadeIn 0.3s ease-out}
+        .ad-container{width:90%;max-width:400px;background:#1a1a2e;border-radius:20px;overflow:hidden;border:2px solid #8B5CF6}
+        .ad-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:rgba(139,92,246,0.2)}
+        .ad-badge{display:flex;align-items:center;gap:6px;color:#8B5CF6;font-size:12px;font-weight:600}
+        .ad-badge svg{width:16px;height:16px;fill:#8B5CF6}
+        .ad-timer{color:white;font-size:14px;font-weight:700;padding:4px 12px;background:rgba(255,255,255,0.1);border-radius:12px}
+        .ad-video-container{position:relative;width:100%;aspect-ratio:16/9;background:#000}
+        .ad-video{width:100%;height:100%;object-fit:cover}
+        .ad-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,#8B5CF6,#6366f1)}
+        .ad-placeholder-icon{width:60px;height:60px;background:rgba(255,255,255,0.2);border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+        .ad-placeholder-icon svg{width:30px;height:30px;fill:white}
+        .ad-placeholder-text{color:white;font-size:14px;font-weight:500}
+        .ad-info{padding:16px}
+        .ad-title{color:white;font-size:16px;font-weight:700;margin-bottom:4px}
+        .ad-desc{color:rgba(255,255,255,0.7);font-size:13px;margin-bottom:12px}
+        .ad-reward{display:flex;align-items:center;gap:8px;padding:12px;background:rgba(139,92,246,0.2);border-radius:12px}
+        .ad-reward-icon{width:36px;height:36px;background:linear-gradient(135deg,#F59E0B,#D97706);border-radius:50%;display:flex;align-items:center;justify-content:center}
+        .ad-reward-icon svg{width:20px;height:20px;fill:white}
+        .ad-reward-text{flex:1}
+        .ad-reward-label{color:rgba(255,255,255,0.6);font-size:11px}
+        .ad-reward-value{color:#F59E0B;font-size:18px;font-weight:700}
+        .ad-progress{width:100%;height:4px;background:rgba(255,255,255,0.2);border-radius:2px;margin-top:12px;overflow:hidden}
+        .ad-progress-bar{height:100%;background:linear-gradient(90deg,#8B5CF6,#F59E0B);border-radius:2px;width:0%;transition:width 0.1s linear}
+        .ad-status{text-align:center;padding:16px;color:rgba(255,255,255,0.6);font-size:13px;font-weight:500}
+        
+        /* ball 타겟 (보라색) */
+        .reward-target.ball .target-ring{border-color:#8B5CF6}
+        .reward-target.ball .target-ring::before{background:#8B5CF6}
+        .reward-target.ball .target-inner{border-color:#8B5CF6}
+        .reward-target.ball .target-dot{background:#8B5CF6}
+        .reward-target.ball .reward-label{border-color:#8B5CF6}
+        .reward-target.ball .reward-quest{color:#8B5CF6}
+        .reward-target.ball .reward-info svg{fill:#8B5CF6}
+        
+        /* 투시모드 버튼 */
+        .xray-btn{position:absolute;bottom:200px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:8px;padding:14px 24px;background:linear-gradient(135deg,rgba(6,182,212,0.9),rgba(59,130,246,0.9));border:2px solid rgba(255,255,255,0.3);border-radius:30px;color:white;font-size:14px;font-weight:600;z-index:90;backdrop-filter:blur(10px);box-shadow:0 4px 20px rgba(6,182,212,0.4);cursor:pointer;transition:all 0.3s}
+        .xray-btn:active{transform:translateX(-50%) scale(0.95)}
+        .xray-btn svg{width:20px;height:20px;fill:currentColor}
+        .xray-btn.show{display:flex}
+        
+        /* 투시모드 오버레이 */
+        .xray-overlay{position:absolute;pointer-events:none;z-index:60;opacity:0;transition:opacity 0.5s;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.3)}
+        .xray-overlay.active{opacity:1;pointer-events:auto}
+        
+        /* 건물 투시 컨테이너 - 스크롤 가능 */
+        .xray-building{position:absolute;top:60px;left:0;right:0;bottom:320px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
+        .xray-building::-webkit-scrollbar{width:4px}
+        .xray-building::-webkit-scrollbar-track{background:transparent}
+        .xray-building::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.3);border-radius:2px}
+        .xray-building-inner{position:relative;min-height:100%;padding:10px 0}
+        
+        /* 층별 레이어 - 가시성 개선 */
+        .xray-floor{position:absolute;left:0;right:0;background:rgba(15,23,42,0.9);border:1px solid rgba(6,182,212,0.8);border-radius:6px;transform-origin:center bottom;transition:all 0.2s;cursor:pointer;-webkit-tap-highlight-color:transparent}
+        .xray-floor::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,rgba(6,182,212,0.9),transparent)}
+        .xray-floor:active{background:rgba(6,182,212,0.3);transform:scale(0.98)}
+        .xray-floor::after{content:'›';position:absolute;right:12px;top:50%;transform:translateY(-50%);color:rgba(6,182,212,0.7);font-size:16px;font-weight:bold}
+        
+        /* 층 라벨 */
+        .xray-floor-label{position:absolute;left:-50px;top:50%;transform:translateY(-50%);padding:4px 8px;background:rgba(6,182,212,0.9);border-radius:4px;color:white;font-size:10px;font-weight:600;white-space:nowrap}
+        
+        /* 층별 아이콘들 */
+        .xray-icons{position:absolute;right:30px;top:50%;transform:translateY(-50%);display:flex;gap:6px}
+        .xray-icon{width:24px;height:24px;background:rgba(6,182,212,0.2);border-radius:4px;display:flex;align-items:center;justify-content:center}
+        .xray-icon svg{width:14px;height:14px;fill:rgba(255,255,255,0.9)}
+        
+        /* 시스템 연결선 */
+        .xray-connection{position:absolute;width:2px;background:linear-gradient(180deg,rgba(6,182,212,0.8),rgba(59,130,246,0.8));z-index:1}
+        .xray-connection::after{content:'';position:absolute;bottom:-4px;left:-3px;width:8px;height:8px;background:#06B6D4;border-radius:50%;box-shadow:0 0 10px #06B6D4}
+        
+        /* 정보 태그 */
+        .xray-tag{position:absolute;padding:6px 10px;background:rgba(15,23,42,0.95);border:1px solid rgba(6,182,212,0.5);border-radius:6px;color:white;font-size:11px;white-space:nowrap;z-index:5}
+        .xray-tag::before{content:'';position:absolute;width:30px;height:1px;background:rgba(6,182,212,0.6)}
+        .xray-tag.left::before{right:100%;top:50%}
+        .xray-tag.right::before{left:100%;top:50%}
+        .xray-tag-title{color:#06B6D4;font-weight:600;margin-bottom:2px}
+        .xray-tag-value{color:rgba(255,255,255,0.8);font-size:10px}
+        
+        /* 드론/특수 요소 */
+        .xray-drone{position:absolute;width:30px;height:20px;animation:droneFly 3s ease-in-out infinite}
+        @keyframes droneFly{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+        
+        /* 투시모드 정보 패널 - 가시성 개선 */
+        .xray-info-panel{position:fixed;bottom:10px;left:10px;right:10px;padding:12px;background:rgba(15,23,42,0.98);border:1px solid rgba(6,182,212,0.4);border-radius:12px;z-index:100;pointer-events:auto;max-height:45vh;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;box-shadow:0 -4px 20px rgba(0,0,0,0.5)}
+        /* 닫기 버튼 - 패널 상단 중앙 외부 */
+        .xray-close-btn{position:absolute;top:-14px;left:50%;transform:translateX(-50%);width:28px;height:28px;padding:0;background:rgba(30,41,59,0.98);border:1px solid rgba(6,182,212,0.5);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;color:rgba(255,255,255,0.8);transition:all 0.2s;box-shadow:0 2px 8px rgba(0,0,0,0.4)}
+        .xray-close-btn:active{background:rgba(6,182,212,0.4)}
+        .xray-close-btn svg{width:14px;height:14px;fill:currentColor}
+        .xray-info-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+        .xray-info-title{color:white;font-size:14px;font-weight:700}
+        .xray-info-badge{padding:3px 8px;background:rgba(6,182,212,0.3);border:1px solid rgba(6,182,212,0.6);border-radius:10px;color:#06B6D4;font-size:10px;font-weight:600}
+        /* 시스템 태그 영역 - 한줄로 스크롤 */
+        .xray-system-tags{display:flex;flex-wrap:nowrap;gap:6px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(6,182,212,0.3);overflow-x:auto;overscroll-behavior:contain;touch-action:pan-x}
+        .xray-system-tag{display:flex;align-items:center;gap:4px;padding:4px 8px;background:rgba(255,255,255,0.08);border-radius:6px;font-size:10px;white-space:nowrap}
+        .xray-system-tag-dot{width:6px;height:6px;border-radius:50%}
+        .xray-system-tag-title{color:rgba(255,255,255,0.95);font-weight:600}
+        .xray-system-tag-value{color:rgba(255,255,255,0.7)}
+        /* 통계 그리드 - 작게 */
+        .xray-info-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+        .xray-info-item{text-align:center;padding:6px;background:rgba(255,255,255,0.08);border-radius:8px}
+        .xray-info-icon{width:24px;height:24px;margin:0 auto 4px;background:linear-gradient(135deg,rgba(6,182,212,0.4),rgba(59,130,246,0.4));border-radius:6px;display:flex;align-items:center;justify-content:center}
+        .xray-info-icon svg{width:14px;height:14px;fill:#06B6D4}
+        .xray-info-label{color:rgba(255,255,255,0.7);font-size:9px;margin-bottom:1px}
+        .xray-info-value{color:white;font-size:12px;font-weight:600}
+        /* 실시간 피드 영역 - 유지 */
+        .xray-live-feed{margin-top:8px;padding-top:8px;border-top:1px solid rgba(6,182,212,0.3)}
+        .xray-live-header{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+        .xray-live-dot{width:6px;height:6px;background:#22C55E;border-radius:50%;animation:livePulse 1.5s infinite}
+        @keyframes livePulse{0%,100%{opacity:1}50%{opacity:0.5}}
+        .xray-live-title{color:rgba(255,255,255,0.8);font-size:10px;font-weight:600}
+        .xray-live-badge{padding:2px 6px;background:rgba(239,68,68,0.3);border:1px solid rgba(239,68,68,0.6);border-radius:8px;color:#EF4444;font-size:9px;font-weight:600;margin-left:4px}
+        .xray-live-items{display:flex;flex-direction:column;gap:4px;max-height:70px;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y}
+        .xray-live-item{display:flex;align-items:center;gap:6px;padding:6px 8px;background:rgba(255,255,255,0.05);border-radius:6px;font-size:10px}
+        .xray-live-item-icon{width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .xray-live-item-icon svg{width:12px;height:12px;fill:white}
+        .xray-live-item-content{flex:1;min-width:0}
+        .xray-live-item-text{color:rgba(255,255,255,0.95);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}
+        .xray-live-item-sub{color:rgba(255,255,255,0.6);font-size:9px}
+        .xray-live-item-time{color:rgba(6,182,212,0.9);font-size:9px;flex-shrink:0}
+    </style>
+</head>
+<body>
+<div id="container">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="videoCanvas"></canvas>
+    <div id="overlay"></div>
+    
+    <!-- 줌 인디케이터 -->
+    <div class="zoom-indicator" id="zoomIndicator">1.0x</div>
+    
+    <div class="top-bar">
+        <div class="top-left">
+            <button class="icon-btn" onclick="toggleMinimap()">
+                <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
+            </button>
+            <div class="minimap-container" id="minimapContainer">
+                <button class="minimap-close" onclick="toggleMinimap()">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+                <div class="minimap">
+                    <div class="minimap-block" style="top:5%;left:5%;width:25%;height:30%"></div>
+                    <div class="minimap-block" style="top:5%;left:70%;width:25%;height:25%"></div>
+                    <div class="minimap-block highlight" style="top:40%;left:5%;width:20%;height:25%"></div>
+                    <div class="minimap-block" style="top:70%;left:5%;width:30%;height:25%"></div>
+                    <div class="minimap-block" style="top:70%;left:60%;width:35%;height:25%"></div>
+                    <div class="minimap-road horizontal" style="top:47%"></div>
+                    <div class="minimap-road vertical" style="left:47%"></div>
+                    <div class="minimap-road small horizontal" style="top:25%"></div>
+                    <div class="minimap-road small horizontal" style="top:75%"></div>
+                    <div class="minimap-road small vertical" style="left:25%"></div>
+                    <div class="minimap-road small vertical" style="left:75%"></div>
+                    <div class="minimap-subway red" style="top:44%;left:0;right:0"></div>
+                    <div class="minimap-subway blue" style="top:50%;left:0;right:0"></div>
+                    <div class="minimap-station" style="top:47%;left:47%">
+                        <div class="minimap-station-dot"></div>
+                        <div class="minimap-station-label">판교역</div>
+                    </div>
+                    <div class="minimap-poi" style="top:12%;left:15%">이마트24</div>
+                    <div class="minimap-poi" style="top:82%;left:18%">스타벅스</div>
+                    <div class="minimap-poi" style="top:82%;left:75%">그레이츠</div>
+                    <div class="minimap-marker" style="top:30%;left:80%">1</div>
+                    <div class="minimap-marker active" style="top:60%;left:70%">2</div>
+                    <div class="minimap-marker green" style="top:35%;left:20%">3</div>
+                    <div class="minimap-current">
+                        <div class="minimap-current-pulse"></div>
+                        <div class="minimap-current-dot"><svg viewBox="0 0 24 24"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="top-right">
+            <div class="mode-ind"><svg viewBox="0 0 24 24"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>AR모드</div>
+            <div class="detect-info" id="detectInfo">감지: 0개</div>
+        </div>
+    </div>
+    
+    <div class="bottom-bar" id="bottomBar">
+        <div class="mode-switcher">
+            <button class="mode-btn normal active" onclick="switchMode('normal')" ontouchend="switchMode('normal')">
+                <svg viewBox="0 0 24 24"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+                일반
+            </button>
+            <button class="mode-btn reward" onclick="switchMode('reward')" ontouchend="switchMode('reward')">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-5-9h10v2H7z"/><circle cx="12" cy="12" r="3"/></svg>
+                리워드
+            </button>
+        </div>
+    </div>
+    
+    <!-- 투시모드 오버레이 -->
+    <div class="xray-overlay" id="xrayOverlay">
+        <div class="xray-building" id="xrayBuilding">
+            <!-- 층별 레이어가 동적으로 생성됨 -->
+        </div>
+        
+        <!-- 정보 패널 -->
+        <div class="xray-info-panel">
+            <!-- 닫기 버튼 - 우측 상단 작은 X -->
+            <button class="xray-close-btn" onclick="closeXrayMode()">
+                <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+            
+            <div class="xray-info-header">
+                <div class="xray-info-title" id="xrayBuildingName">테헤란로 빌딩</div>
+                <div class="xray-info-badge">LIVE 투시</div>
+            </div>
+            <!-- 시스템 태그 - 한글화 + 유용한 정보 -->
+            <div class="xray-system-tags" id="xraySystemTags">
+                <!-- 동적으로 생성됨 -->
+            </div>
+            <div class="xray-info-grid">
+                <div class="xray-info-item">
+                    <div class="xray-info-icon">
+                        <svg viewBox="0 0 24 24"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10z"/></svg>
+                    </div>
+                    <div class="xray-info-label">총 층수</div>
+                    <div class="xray-info-value" id="xrayFloors">12층</div>
+                </div>
+                <div class="xray-info-item">
+                    <div class="xray-info-icon">
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                    </div>
+                    <div class="xray-info-label">입주율</div>
+                    <div class="xray-info-value" id="xrayOccupancy">87%</div>
+                </div>
+                <div class="xray-info-item">
+                    <div class="xray-info-icon">
+                        <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                    </div>
+                    <div class="xray-info-label">테넌트</div>
+                    <div class="xray-info-value" id="xrayTenants">24개</div>
+                </div>
+                <div class="xray-info-item">
+                    <div class="xray-info-icon">
+                        <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+                    </div>
+                    <div class="xray-info-label">영업중</div>
+                    <div class="xray-info-value" id="xrayOpen">18개</div>
+                </div>
+            </div>
+            <!-- 실시간 피드 (지금이순간 연동) -->
+            <div class="xray-live-feed">
+                <div class="xray-live-header">
+                    <div class="xray-live-dot"></div>
+                    <span class="xray-live-title">지금 이 순간</span>
+                    <span class="xray-live-badge">LIVE</span>
+                </div>
+                <div class="xray-live-items" id="xrayLiveItems">
+                    <div class="xray-live-item">
+                        <div class="xray-live-item-icon" style="background:linear-gradient(135deg,#F59E0B,#D97706)">
+                            <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm4.24 16L12 15.45 7.77 18l1.12-4.81-3.73-3.23 4.92-.42L12 5l1.92 4.53 4.92.42-3.73 3.23L16.23 18z"/></svg>
+                        </div>
+                        <div class="xray-live-item-content">
+                            <div class="xray-live-item-text">4F 카페 오늘의 메뉴 업데이트</div>
+                            <div class="xray-live-item-sub">아메리카노 20% 할인</div>
+                        </div>
+                        <div class="xray-live-item-time">방금</div>
+                    </div>
+                    <div class="xray-live-item">
+                        <div class="xray-live-item-icon" style="background:linear-gradient(135deg,#8B5CF6,#7C3AED)">
+                            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                        </div>
+                        <div class="xray-live-item-content">
+                            <div class="xray-live-item-text">5F 피트니스 PT 예약 가능</div>
+                            <div class="xray-live-item-sub">오후 3시 슬롯 오픈</div>
+                        </div>
+                        <div class="xray-live-item-time">2분 전</div>
+                    </div>
+                    <div class="xray-live-item">
+                        <div class="xray-live-item-icon" style="background:linear-gradient(135deg,#22C55E,#16A34A)">
+                            <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                        </div>
+                        <div class="xray-live-item-content">
+                            <div class="xray-live-item-text">3F 컨퍼런스룸 A 사용 가능</div>
+                            <div class="xray-live-item-sub">10인실 · 빔프로젝터</div>
+                        </div>
+                        <div class="xray-live-item-time">5분 전</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 리워드모드 에임 -->
+    <div class="aim-crosshair" id="aimCrosshair">
+        <div class="aim-circle"></div>
+        <div class="aim-dot"></div>
+        <div class="aim-countdown" id="aimCountdown">3</div>
+    </div>
+    
+    <!-- 퀘스트 진행 팝업 -->
+    <div class="quest-popup" id="questPopup">
+        <div class="quest-progress" id="questProgress">1/3</div>
+        <div class="quest-message" id="questMessage">자동차 인식 완료!</div>
+    </div>
+    
+    <!-- 퀘스트 완료 화면 -->
+    <div class="quest-complete" id="questComplete">
+        <div class="complete-icon">
+            <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+        </div>
+        <div class="complete-title">퀘스트 완료!</div>
+        <div class="complete-reward">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.31-8.86c-1.77-.45-2.34-.94-2.34-1.67 0-.84.79-1.43 2.1-1.43 1.38 0 1.9.66 1.94 1.64h1.71c-.05-1.34-.87-2.57-2.49-2.97V5H10.9v1.69c-1.51.32-2.72 1.3-2.72 2.81 0 1.79 1.49 2.69 3.66 3.21 1.95.46 2.34 1.15 2.34 1.87 0 .53-.39 1.39-2.1 1.39-1.6 0-2.23-.72-2.32-1.64H8.04c.1 1.7 1.36 2.66 2.86 2.97V19h2.34v-1.67c1.52-.29 2.72-1.16 2.73-2.77-.01-2.2-1.9-2.96-3.66-3.42z"/></svg>
+            +2,000P
+        </div>
+        <button class="complete-btn" onclick="closeQuestComplete()">확인</button>
+    </div>
+    
+    <!-- 광고 팝업 -->
+    <div class="ad-popup" id="adPopup">
+        <div class="ad-container">
+            <div class="ad-header">
+                <div class="ad-badge">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                    광고 시청
+                </div>
+                <div class="ad-timer" id="adTimer">15</div>
+            </div>
+            <div class="ad-video-container">
+                <!-- 실제 광고 영상 -->
+                <video class="ad-video" id="adVideo" playsinline muted>
+                    <source src="https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4" type="video/mp4">
+                </video>
+            </div>
+            <div class="ad-info">
+                <div class="ad-title" id="adTitle">스캔팡 프리미엄</div>
+                <div class="ad-desc" id="adDesc">AR로 만나는 새로운 세상, 지금 경험하세요!</div>
+                <div class="ad-reward">
+                    <div class="ad-reward-icon">
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.31-8.86c-1.77-.45-2.34-.94-2.34-1.67 0-.84.79-1.43 2.1-1.43 1.38 0 1.9.66 1.94 1.64h1.71c-.05-1.34-.87-2.57-2.49-2.97V5H10.9v1.69c-1.51.32-2.72 1.3-2.72 2.81 0 1.79 1.49 2.69 3.66 3.21 1.95.46 2.34 1.15 2.34 1.87 0 .53-.39 1.39-2.1 1.39-1.6 0-2.23-.72-2.32-1.64H8.04c.1 1.7 1.36 2.66 2.86 2.97V19h2.34v-1.67c1.52-.29 2.72-1.16 2.73-2.77-.01-2.2-1.9-2.96-3.66-3.42z"/></svg>
+                    </div>
+                    <div class="ad-reward-text">
+                        <div class="ad-reward-label">시청 완료 시 지급</div>
+                        <div class="ad-reward-value" id="adRewardValue">+500P</div>
+                    </div>
+                </div>
+                <div class="ad-progress">
+                    <div class="ad-progress-bar" id="adProgressBar"></div>
+                </div>
+            </div>
+            <div class="ad-status" id="adStatus">광고 시청 중...</div>
+        </div>
+    </div>
+    
+    <div class="panel" id="panel">
+        <div class="panel-handle"></div>
+        <div class="panel-head">
+            <span class="panel-title" id="panelTitle">건물</span>
+            <button class="panel-close" onclick="closePanel()"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+        </div>
+        <div class="panel-tabs">
+            <button class="panel-tab active" data-tab="live" onclick="switchTab('live')">지금이순간</button>
+            <button class="panel-tab" data-tab="custom" onclick="switchTab('custom')">맞춤모드</button>
+            <button class="panel-tab" data-tab="floor" onclick="switchTab('floor')">층별모드</button>
+        </div>
+        <div class="live-indicator" id="liveIndicator"><div class="live-dot"></div><span>실시간 업데이트</span></div>
+        <div class="panel-cards" id="panelCards"></div>
+    </div>
+    
+    <div class="detail-page" id="detailPage">
+        <div class="detail-header">
+            <button class="detail-back" onclick="closeDetail()"><svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg></button>
+            <span class="detail-header-title" id="detailHeaderTitle">상세</span>
+        </div>
+        <div class="detail-content" id="detailContent"></div>
+    </div>
+    
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <div class="loading-text">AR 모델 로딩...</div>
+        <div class="loading-subtext">카메라 권한을 허용해주세요</div>
+    </div>
+</div>
+
+<script>
+let video, overlay, model, videoCanvas, ctx;
+let isRunning = false;
+let buildingMemory = [], activeTrackers = new Map();
+let nextBuildingIndex = 0, nextMemoryId = 1, nextTrackerId = 1;
+
+// 공통 임계값 설정
+const THRESHOLD_START = 0.5;  // 시작 임계값
+const THRESHOLD_KEEP = 0.2;   // 유지 임계값
+
+// 일반모드 히스테리시스 추적
+let normalTrackingIds = new Set(); // 현재 추적 중인 객체 ID들
+
+// 투시모드 관련
+let isXrayMode = false;
+let currentXrayBuilding = null; // 현재 투시 중인 건물 정보
+let detectedContour = null; // OpenCV로 검출된 윤곽선
+// isOpenCvReady는 head에서 전역으로 선언됨
+
+// 자동 투시모드 관련
+let xrayGazeStartTime = 0; // 동일 객체 응시 시작 시간
+let xrayGazeTrackerId = null; // 응시 중인 트래커 ID
+let xrayGazeEnabled = true; // 투시 게이지 활성화 여부
+const XRAY_GAZE_DURATION = 3000; // 3초 응시 시 투시모드 시작
+
+// 줌 관련
+let currentZoom = 1;
+let initialPinchDistance = 0;
+let initialZoom = 1;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 4;
+
+// 모드 관련
+let currentMode = 'normal'; // 'normal' or 'reward'
+let rewardTarget = null;
+let questProgress = 0;
+let questTotal = 3;
+let aimLockTime = 0;
+let isAimLocked = false;
+let questCompleted = false;
+let currentCountdown = 0;
+let hasCompletedCurrentTarget = false; // 현재 타겟 완료 여부
+let wasOutOfAim = true; // 에임 밖으로 나갔다 왔는지
+let smoothTargetX = 0, smoothTargetY = 0; // 리워드 타겟 스무딩
+let lastTargetBox = null; // UI 기반 타겟 박스 (감지와 무관하게 유지)
+let targetVisible = false; // 타겟 UI 표시 여부
+let isTargetTracking = false; // 히스테리시스: 현재 타겟 추적 중인지
+
+// ball 타겟 관련
+let ballTarget = null;
+let smoothBallX = 0, smoothBallY = 0;
+let isBallTracking = false;
+let isBallAimLocked = false;
+let ballAimLockTime = 0;
+let ballCountdown = 0;
+
+// TV 타겟 관련
+let tvTarget = null;
+let smoothTvX = 0, smoothTvY = 0;
+let isTvTracking = false;
+let isTvAimLocked = false;
+let tvAimLockTime = 0;
+let tvCountdown = 0;
+
+// 광고 관련
+let isAdPlaying = false;
+let adInterval = null;
+let adTimeRemaining = 15;
+const AD_DURATION = 5; // 광고 길이 (초)
+const BALL_REWARD = 500; // ball 광고 시청 리워드
+
+// 퀘스트 데이터
+const questData = {
+    title: '자동차 3대 인식',
+    reward: 2000
+};
+
+function switchMode(mode) {
+    if (currentMode === mode) return;
+    currentMode = mode;
+    
+    // 버튼 상태 업데이트
+    document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelector('.mode-btn.' + mode).classList.add('active');
+    
+    // 모드 인디케이터 업데이트
+    const modeInd = document.querySelector('.mode-ind');
+    if (mode === 'reward') {
+        modeInd.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/><circle cx="12" cy="12" r="3"/></svg>리워드';
+        modeInd.style.background = 'linear-gradient(135deg,#F59E0B,#D97706)';
+        modeInd.style.color = 'white';
+        document.getElementById('aimCrosshair').classList.add('show');
+        // 퀘스트 리셋
+        questProgress = 0;
+        questCompleted = false;
+        currentCountdown = 0;
+        hasCompletedCurrentTarget = false;
+        wasOutOfAim = true;
+        lastTargetBox = null;
+        targetVisible = false;
+        isTargetTracking = false;
+        // ball 관련 리셋
+        isBallTracking = false;
+        isBallAimLocked = false;
+        ballAimLockTime = 0;
+        ballCountdown = 0;
+        // tv 관련 리셋
+        isTvTracking = false;
+        isTvAimLocked = false;
+        tvAimLockTime = 0;
+        tvCountdown = 0;
+    } else {
+        modeInd.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>AR모드';
+        modeInd.style.background = 'rgba(255,255,255,0.95)';
+        modeInd.style.color = '#333';
+        document.getElementById('aimCrosshair').classList.remove('show');
+        document.getElementById('aimCrosshair').classList.remove('locked');
+        document.getElementById('aimCrosshair').classList.remove('counting');
+        lastTargetBox = null;
+        targetVisible = false;
+    }
+    
+    // 투시모드 닫기 및 응시 리셋
+    if (isXrayMode) closeXrayMode();
+    resetXrayGaze();
+    
+    // 기존 타겟/라벨 제거
+    if (rewardTarget) {
+        rewardTarget.remove();
+        rewardTarget = null;
+    }
+    if (ballTarget) {
+        ballTarget.remove();
+        ballTarget = null;
+    }
+    if (tvTarget) {
+        tvTarget.remove();
+        tvTarget = null;
+    }
+    activeTrackers.forEach(t => t.el.remove());
+    activeTrackers.clear();
+    buildingMemory = [];
+}
+
+function closeQuestComplete() {
+    document.getElementById('questComplete').classList.remove('show');
+    
+    // 원래 퀘스트 내용으로 복원
+    const completeScreen = document.getElementById('questComplete');
+    const title = completeScreen.querySelector('.complete-title');
+    const reward = completeScreen.querySelector('.complete-reward');
+    
+    title.textContent = '퀘스트 완료!';
+    reward.innerHTML = `
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.31-8.86c-1.77-.45-2.34-.94-2.34-1.67 0-.84.79-1.43 2.1-1.43 1.38 0 1.9.66 1.94 1.64h1.71c-.05-1.34-.87-2.57-2.49-2.97V5H10.9v1.69c-1.51.32-2.72 1.3-2.72 2.81 0 1.79 1.49 2.69 3.66 3.21 1.95.46 2.34 1.15 2.34 1.87 0 .53-.39 1.39-2.1 1.39-1.6 0-2.23-.72-2.32-1.64H8.04c.1 1.7 1.36 2.66 2.86 2.97V19h2.34v-1.67c1.52-.29 2.72-1.16 2.73-2.77-.01-2.2-1.9-2.96-3.66-3.42z"/></svg>
+        +${questData.reward}P
+    `;
+    
+    questProgress = 0;
+    questCompleted = false;
+    lastTargetBox = null;
+    targetVisible = false;
+    hasCompletedCurrentTarget = false;
+    wasOutOfAim = true;
+    // 타겟 제거
+    if (rewardTarget) {
+        rewardTarget.remove();
+        rewardTarget = null;
+    }
+}
+
+// 건물 층별 데이터 (레퍼런스처럼 여러 업체 표시)
+const buildingFloors = {
+    'GS타워': [
+        { floor: '40F', tenants: '스카이라운지 / 전망대', icons: ['☁️', '🌃'] },
+        { floor: '35-39F', tenants: 'GS홀딩스 / 임원실', icons: ['GS', '👔'] },
+        { floor: '30-34F', tenants: 'GS리테일 / GS에너지', icons: ['GS', '⚡'] },
+        { floor: '25-29F', tenants: '공실', icons: ['🏢'], status: 'vacant', vacant: true },
+        { floor: '20-24F', tenants: '테크스타트업 / AI벤처스', icons: ['🚀', '🤖'], status: 'hiring', highlight: true },
+        { floor: '15-19F', tenants: '법무법인 / 회계법인 / 컨설팅', icons: ['⚖️', '📊', '💼'] },
+        { floor: '10-14F', tenants: '공실', icons: ['🏢'], status: 'vacant', vacant: true },
+        { floor: '5-9F', tenants: '의료센터 / 피트니스', icons: ['🏥', '💪'] },
+        { floor: '1-4F', tenants: '로비 / 카페 / 편의점 / 은행', icons: ['🏛️', '☕', '🏪', '🏦'] },
+        { floor: 'B1', tenants: '푸드코트 / 식당가', icons: ['🍽️', '🍜'] },
+        { floor: 'B2-B5', tenants: '주차장', icons: ['🚗', '🅿️'] },
+    ],
+    '테헤란로 빌딩': [
+        { floor: '18-20F', tenants: '스타트업 허브 / 코워킹', icons: ['🚀', '💻'], status: 'hiring', highlight: true },
+        { floor: '15-17F', tenants: '공실', icons: ['🏢'], status: 'vacant', vacant: true },
+        { floor: '10-14F', tenants: 'IT 컨설팅 / 소프트웨어', icons: ['💻', '⚙️'] },
+        { floor: '5-9F', tenants: '금융사 / 보험사', icons: ['🏦', '📋'] },
+        { floor: '1-4F', tenants: '로비 / 편의점 / 카페', icons: ['🏛️', '🏪', '☕'] },
+        { floor: 'B1-B3', tenants: '주차장 / 창고', icons: ['🚗', '📦'] },
+    ]
+};
+
+// 실시간 피드 데이터 (timestamp로 시간 계산)
+const now = Date.now();
+const liveFeedData = [
+    { icon: 'parking', text: 'B3 주차장 15자리 비었어요', timestamp: now - 30000, action: '확인' },
+    { icon: 'promo', text: '1층 카페 아메리카노 1+1!', timestamp: now - 120000, action: '쿠폰' },
+    { icon: 'meeting', text: '15층 회의실 C 예약 취소됨', timestamp: now - 300000, action: '예약' },
+    { icon: 'food', text: 'B1 구내식당 A코스 매진 임박', timestamp: now - 480000, action: '메뉴' },
+    { icon: 'elevator', text: '엘리베이터 대기 평균 2분', timestamp: now - 600000, action: '' },
+    { icon: 'delivery', text: '무인택배함 3칸 남음', timestamp: now - 900000, action: '위치' },
+];
+
+const liveFeedIcons = {
+    parking: '<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z"/>',
+    promo: '<path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58s1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/>',
+    meeting: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/>',
+    food: '<path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/>',
+    elevator: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3l4 4h-3v4h-2v-4H8l4-4zm4 9H8v-2h8v2z"/>',
+    delivery: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 16H6c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1h12c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1zm-6-10l-4 4h3v4h2v-4h3l-4-4z"/>'
+};
+
+// 건물 데이터
+const buildings = [
+    { name: 'GS타워', distance: 125, color: 'orange' },
+    { name: '테헤란로 빌딩', distance: 85, color: 'blue' },
+    { name: '역삼 타워', distance: 110, color: 'blue' },
+    { name: '강남파이낸스센터', distance: 200, color: 'green' },
+    { name: '삼성타운', distance: 180, color: 'orange' }
+];
+
+// AR 카드 데이터 (영업중 여부 추가)
+const arCardData = {
+    restaurant: [{ name: '스시 오마카세', desc: '프리미엄 오마카세', floor: 'B1층', rating: '4.8', isOpen: true, hours: '11:30-22:00', image: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=800' }],
+    cafe: [{ name: '루프탑 카페', desc: '시그니처 라떼', floor: '40층', rating: '4.7', isOpen: true, hours: '08:00-22:00', image: 'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=800' }],
+    parking: [{ name: '실시간 주차', desc: 'B3: 15/150 여유', floor: 'B2-B3', status: '여유', isOpen: true }],
+    realestate: [{ name: '25층 공실', desc: '전용 85평, 강남 조망', floor: '25층', price: '보5억/월2,500만', isOpen: false, image: 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=800' }],
+    company: [{ name: '테크스타트업', desc: 'AI 물류 솔루션', floor: '15층', employees: '채용중 🔥', isOpen: true, image: 'https://images.unsplash.com/photo-1553877522-43269d4ea984?w=800' }],
+    facility: [{ name: '피트니스', desc: '최신 운동기구', floor: 'B2층', hours: '06:00-23:00', isOpen: true, image: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800' }],
+    live: [{ name: '지금 이 순간', desc: '실시간 건물 현황', status: 'LIVE' }]
+};
+
+const categoryIcons = {
+    restaurant: '<path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/>',
+    cafe: '<path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/>',
+    parking: '<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z"/>',
+    realestate: '<path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/>',
+    company: '<path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/>',
+    facility: '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>',
+    live: '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>'
+};
+
+const categoryNames = {
+    restaurant: '음식점', cafe: '카페', parking: '주차장',
+    realestate: '공실', company: '입주기업', facility: '편의시설', live: '실시간'
+};
+
+function toggleMinimap() {
+    document.getElementById('minimapContainer').classList.toggle('open');
+}
+
+function resetMemory() {
+    buildingMemory = [];
+    nextBuildingIndex = 0;
+    activeTrackers.forEach(t => t.el.remove());
+    activeTrackers.clear();
+}
+
+let currentBuilding = null;
+let currentTab = 'live';
+
+function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('.panel-tab[data-tab="'+tab+'"]').classList.add('active');
+    renderPanelContent();
+}
+
+function renderPanelContent() {
+    if (!currentBuilding) return;
+    const container = document.getElementById('panelCards');
+    const liveIndicator = document.getElementById('liveIndicator');
+    let html = '';
+    
+    // 지금이순간 탭일 때만 인디케이터 표시
+    if (currentTab === 'live') {
+        liveIndicator.classList.add('show');
+        startLiveFeedUpdates();
+    } else {
+        liveIndicator.classList.remove('show');
+        stopLiveFeedUpdates();
+    }
+    
+    if (currentTab === 'live') {
+        // 지금이순간 - 다른 탭과 동일한 UI
+        html = liveFeedData.map((item, i) => {
+            const timeAgo = getTimeAgo(item.timestamp || Date.now() - i * 120000);
+            return '<div class="card" data-timestamp="'+(item.timestamp || Date.now() - i * 120000)+'">'+
+                '<div class="card-icon '+item.icon+'"><svg viewBox="0 0 24 24">'+liveFeedIcons[item.icon]+'</svg></div>'+
+                '<div class="card-content">'+
+                '<div class="card-cat">'+getLiveCatName(item.icon)+'</div>'+
+                '<div class="card-name">'+item.text+'</div>'+
+                '<div class="card-desc card-time">'+timeAgo+'</div>'+
+                '</div>'+
+                (item.action ? '<button class="card-action">'+item.action+'</button>' : '')+
+                '</div>';
+        }).join('');
+    } else if (currentTab === 'custom') {
+        // 맞춤모드 - 영업중 여부 표시
+        const categories = ['restaurant', 'cafe', 'parking', 'realestate', 'company', 'facility'];
+        categories.forEach(cat => {
+            const item = arCardData[cat]?.[0];
+            if (!item) return;
+            let extra = item.rating ? '⭐'+item.rating : item.price || item.employees || (item.hours ? '🕐'+item.hours : '') || (item.status || '');
+            const openStatus = item.isOpen !== undefined ? (item.isOpen ? '<span class="open-badge">영업중</span>' : '<span class="closed-badge">영업종료</span>') : '';
+            
+            html += '<div class="card">'+
+                '<div class="card-icon '+cat+'"><svg viewBox="0 0 24 24">'+categoryIcons[cat]+'</svg></div>'+
+                '<div class="card-content">'+
+                '<div class="card-cat">'+categoryNames[cat]+' '+openStatus+'</div>'+
+                '<div class="card-name">'+item.name+'</div>'+
+                '<div class="card-desc">'+item.desc+(extra ? ' · '+extra : '')+'</div>'+
+                '</div>'+
+                '<button class="card-action" onclick="openDetail(\''+cat+'\',\''+item.name+'\')">상세보기</button>'+
+                '</div>';
+        });
+    } else if (currentTab === 'floor') {
+        // 층별모드 - 여러 업체 표시 (레퍼런스 스타일)
+        const buildingName = currentBuilding.name;
+        const floors = buildingFloors[buildingName] || buildingFloors['GS타워'];
+        
+        html = floors.map(f => {
+            const iconsHtml = f.icons.map(icon => '<span class="floor-icon">'+icon+'</span>').join('');
+            return '<div class="card'+(f.vacant?' vacant':'')+(f.highlight?' highlight':'')+'">'+
+                '<div class="floor-num">'+f.floor+'</div>'+
+                '<div class="card-content">'+
+                '<div class="card-name">'+f.tenants+'</div>'+
+                '<div class="floor-icons">'+iconsHtml+'</div>'+
+                '</div>'+
+                (f.status ? '<span class="floor-status '+(f.status==='hiring'?'hiring':'vacant-status')+'">'+(f.status==='hiring'?'채용중':'공실')+'</span>' : '')+
+                '</div>';
+        }).join('');
+    }
+    
+    container.innerHTML = html;
+}
+
+function getLiveCatName(icon) {
+    const names = {parking:'주차정보',promo:'프로모션',meeting:'회의실',food:'구내식당',elevator:'엘리베이터',delivery:'택배'};
+    return names[icon] || '알림';
+}
+
+function getTimeAgo(timestamp) {
+    const now = Date.now();
+    const diff = Math.floor((now - timestamp) / 1000);
+    if (diff < 60) return '방금 전';
+    if (diff < 3600) return Math.floor(diff / 60) + '분 전';
+    if (diff < 86400) return Math.floor(diff / 3600) + '시간 전';
+    return Math.floor(diff / 86400) + '일 전';
+}
+
+function getIconBg(icon) {
+    const colors = {parking:'#3B82F6',promo:'#22C55E',meeting:'#8B5CF6',food:'#F97316',elevator:'#EC4899',delivery:'#F59E0B'};
+    return colors[icon] || '#6366f1';
+}
+
+function openPanel(building) {
+    currentBuilding = building;
+    currentTab = 'live';
+    document.getElementById('panelTitle').textContent = building.name;
+    document.getElementById('panel').classList.add('open');
+    document.getElementById('bottomBar').style.display = 'none';
+    
+    // 탭 초기화
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('.panel-tab[data-tab="live"]').classList.add('active');
+    
+    renderPanelContent();
+}
+
+let liveFeedInterval = null;
+let timeUpdateInterval = null;
+const newFeedMessages = [
+    { icon: 'parking', text: 'B2 주차장 새로 3자리 비었어요', action: '확인' },
+    { icon: 'promo', text: '오후 한정! 아이스크림 할인', action: '쿠폰' },
+    { icon: 'elevator', text: '3번 엘리베이터 운행 재개', action: '' },
+    { icon: 'food', text: 'B1 샐러드바 리필 시작', action: '메뉴' },
+    { icon: 'meeting', text: '20층 미팅룸 A 예약 가능', action: '예약' },
+    { icon: 'delivery', text: '택배 도착 알림: 로비', action: '위치' },
+    { icon: 'parking', text: 'B3 만차 임박 (3자리 남음)', action: '확인' },
+    { icon: 'promo', text: '점심특가! 샐러드 20% 할인', action: '쿠폰' },
+    { icon: 'meeting', text: '10층 세미나실 오후 3시 가능', action: '예약' },
+    { icon: 'food', text: '오늘의 메뉴: 돈까스 정식', action: '메뉴' },
+];
+
+function scheduleNextFeed() {
+    // 5초 ~ 60초 사이 랜덤 간격
+    const randomDelay = Math.floor(Math.random() * 55000) + 5000;
+    liveFeedInterval = setTimeout(() => {
+        if (currentTab !== 'live') return;
+        addNewFeed();
+        scheduleNextFeed();
+    }, randomDelay);
+}
+
+function addNewFeed() {
+    const container = document.getElementById('panelCards');
+    if (!container) return;
+    
+    const newFeed = newFeedMessages[Math.floor(Math.random() * newFeedMessages.length)];
+    const timestamp = Date.now();
+    const newCard = document.createElement('div');
+    newCard.className = 'card new-feed';
+    newCard.setAttribute('data-timestamp', timestamp);
+    newCard.innerHTML = 
+        '<div class="card-icon '+newFeed.icon+'"><svg viewBox="0 0 24 24">'+liveFeedIcons[newFeed.icon]+'</svg></div>'+
+        '<div class="card-content">'+
+        '<div class="card-cat">'+getLiveCatName(newFeed.icon)+'</div>'+
+        '<div class="card-name">'+newFeed.text+'</div>'+
+        '<div class="card-desc card-time">방금 전</div>'+
+        '</div>'+
+        (newFeed.action ? '<button class="card-action">'+newFeed.action+'</button>' : '');
+    
+    // 맨 앞에 삽입
+    if (container.firstChild) {
+        container.insertBefore(newCard, container.firstChild);
+    } else {
+        container.appendChild(newCard);
+    }
+    
+    // 오래된 카드 제거 (8개 초과시)
+    const allCards = container.querySelectorAll('.card');
+    if (allCards.length > 8) {
+        allCards[allCards.length - 1].remove();
+    }
+}
+
+function updateAllTimes() {
+    const container = document.getElementById('panelCards');
+    if (!container || currentTab !== 'live') return;
+    
+    container.querySelectorAll('.card').forEach(card => {
+        const timestamp = parseInt(card.getAttribute('data-timestamp'));
+        if (timestamp) {
+            const timeEl = card.querySelector('.card-time');
+            if (timeEl) {
+                timeEl.textContent = getTimeAgo(timestamp);
+            }
+        }
+    });
+}
+
+function startLiveFeedUpdates() {
+    stopLiveFeedUpdates();
+    scheduleNextFeed();
+    // 30초마다 시간 업데이트
+    timeUpdateInterval = setInterval(updateAllTimes, 30000);
+}
+
+function stopLiveFeedUpdates() {
+    if (liveFeedInterval) {
+        clearTimeout(liveFeedInterval);
+        liveFeedInterval = null;
+    }
+    if (timeUpdateInterval) {
+        clearInterval(timeUpdateInterval);
+        timeUpdateInterval = null;
+    }
+}
+
+function closePanel() {
+    document.getElementById('panel').classList.remove('open');
+    document.getElementById('bottomBar').style.display = 'flex';
+    stopLiveFeedUpdates();
+    
+    // 패널 닫으면 투시 게이지 다시 활성화
+    xrayGazeEnabled = true;
+}
+
+function openDetail(category, name) {
+    video.style.filter = 'blur(10px) brightness(0.3)';
+    document.getElementById('detailPage').classList.add('open');
+    document.getElementById('detailHeaderTitle').textContent = name;
+    
+    const item = arCardData[category]?.find(i => i.name === name) || arCardData[category]?.[0];
+    if (!item) return;
+    
+    let infoHtml = '';
+    if (item.floor) infoHtml += '<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">위치</div><div class="detail-info-value">'+item.floor+'</div></div></div>';
+    if (item.rating) infoHtml += '<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">평점</div><div class="detail-info-value">'+item.rating+' / 5.0</div></div></div>';
+    if (item.price) infoHtml += '<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">임대료</div><div class="detail-info-value">'+item.price+'</div></div></div>';
+    if (item.hours) infoHtml += '<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">운영시간</div><div class="detail-info-value">'+item.hours+'</div></div></div>';
+    if (item.employees) infoHtml += '<div class="detail-info-item"><div class="detail-info-icon"><svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg></div><div class="detail-info-text"><div class="detail-info-label">채용</div><div class="detail-info-value">'+item.employees+'</div></div></div>';
+    
+    const heroImg = item.image ? '<img src="'+item.image+'" alt="'+item.name+'" onerror="this.parentElement.innerHTML=\'<svg viewBox=\\\'0 0 24 24\\\'><path d=\\\'M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z\\\'/></svg>\'">' : '<svg viewBox="0 0 24 24">'+categoryIcons[category]+'</svg>';
+    
+    document.getElementById('detailContent').innerHTML = 
+        '<div class="detail-hero">'+heroImg+'</div>'+
+        '<div class="detail-title">'+item.name+'</div>'+
+        '<div class="detail-category">'+categoryNames[category]+' · '+(currentBuilding?.name || '')+'</div>'+
+        '<div class="detail-description">'+item.desc+'</div>'+
+        '<div class="detail-info-list">'+infoHtml+'</div>'+
+        '<div class="detail-actions">'+
+        '<button class="detail-btn secondary" onclick="closeDetail()">닫기</button>'+
+        '<button class="detail-btn primary">예약하기</button>'+
+        '</div>';
+}
+
+function closeDetail() {
+    video.style.filter = '';
+    document.getElementById('detailPage').classList.remove('open');
+}
+
+function handlePinClick(tid) {
+    // 핀 클릭 시 투시모드 게이지 비활성화 및 리셋
+    xrayGazeEnabled = false;
+    resetXrayGaze();
+    
+    const t = activeTrackers.get(tid);
+    if (t) openPanel(t.building);
+}
+
+function createLabel(building, tid) {
+    const el = document.createElement('div');
+    el.className = 'building-label';
+    el.setAttribute('data-tid', tid);
+    el.innerHTML = 
+        '<div class="label-card '+building.color+'">'+
+        '<div class="label-name">'+building.name+'</div>'+
+        '<div class="label-dist">'+building.distance+'m</div>'+
+        '</div>'+
+        '<div class="label-actions">'+
+        '<div class="act-btn pin '+building.color+'"><svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg></div>'+
+        '</div>';
+    
+    overlay.appendChild(el);
+    return el;
+}
+
+// 오버레이에서 이벤트 위임으로 라벨 클릭 처리
+function setupLabelClickHandler() {
+    const overlay = document.getElementById('overlay');
+    
+    // 터치 이벤트
+    overlay.addEventListener('touchend', function(e) {
+        const label = e.target.closest('.building-label');
+        if (label) {
+            e.preventDefault();
+            e.stopPropagation();
+            const tid = parseInt(label.getAttribute('data-tid'));
+            if (!isNaN(tid)) {
+                handlePinClick(tid);
+            }
+        }
+    }, { passive: false });
+    
+    // 클릭 이벤트 (데스크톱)
+    overlay.addEventListener('click', function(e) {
+        const label = e.target.closest('.building-label');
+        if (label) {
+            e.stopPropagation();
+            const tid = parseInt(label.getAttribute('data-tid'));
+            if (!isNaN(tid)) {
+                handlePinClick(tid);
+            }
+        }
+    });
+}
+
+function calcIoU(a, b) {
+    const x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+    const x2 = Math.min(a.x + a.width, b.x + b.width);
+    const y2 = Math.min(a.y + a.height, b.y + b.height);
+    if (x2 <= x1 || y2 <= y1) return 0;
+    const inter = (x2 - x1) * (y2 - y1);
+    return inter / (a.width * a.height + b.width * b.height - inter);
+}
+
+function getColorHist(box) {
+    try {
+        videoCanvas.width = video.videoWidth;
+        videoCanvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const sx = video.videoWidth / window.innerWidth;
+        const sy = video.videoHeight / window.innerHeight;
+        const x = Math.floor(box.x * sx), y = Math.floor(box.y * sy);
+        const w = Math.floor(box.width * sx), h = Math.floor(box.height * sy);
+        if (w <= 0 || h <= 0) return null;
+        const data = ctx.getImageData(x, y, w, h).data;
+        const hist = new Array(12).fill(0);
+        let n = 0;
+        for (let i = 0; i < data.length; i += 16) {
+            hist[Math.floor(data[i]/64)]++;
+            hist[4+Math.floor(data[i+1]/64)]++;
+            hist[8+Math.floor(data[i+2]/64)]++;
+            n++;
+        }
+        for (let i = 0; i < 12; i++) hist[i] /= n;
+        return hist;
+    } catch(e) { return null; }
+}
+
+function findMemory(box, exclude) {
+    const nx = (box.x + box.width/2) / window.innerWidth;
+    const ny = (box.y + box.height/2) / window.innerHeight;
+    const hist = getColorHist(box);
+    let best = null, bestScore = 0.35;
+    for (const m of buildingMemory) {
+        if (exclude.has(m.id)) continue;
+        const dx = nx - m.pos.x, dy = ny - m.pos.y;
+        const posScore = Math.max(0, 1 - Math.sqrt(dx*dx + dy*dy) * 2);
+        let colorScore = 0.5;
+        if (hist && m.hist) {
+            let s = 0;
+            for (let i = 0; i < 12; i++) s += 1 - Math.abs(hist[i] - m.hist[i]);
+            colorScore = s / 12;
+        }
+        const score = posScore * 0.4 + colorScore * 0.6;
+        if (score > bestScore) { bestScore = score; best = m; }
+    }
+    return best;
+}
+
+function register(box) {
+    const b = buildings[nextBuildingIndex++ % buildings.length];
+    const entry = {
+        id: nextMemoryId++,
+        building: b,
+        pos: {x: (box.x + box.width/2) / window.innerWidth, y: (box.y + box.height/2) / window.innerHeight},
+        hist: getColorHist(box)
+    };
+    buildingMemory.push(entry);
+    return entry;
+}
+
+function updateMem(m, box) {
+    const nx = (box.x + box.width/2) / window.innerWidth;
+    const ny = (box.y + box.height/2) / window.innerHeight;
+    m.pos.x = m.pos.x * 0.7 + nx * 0.3;
+    m.pos.y = m.pos.y * 0.7 + ny * 0.3;
+}
+
+function createTracker(box, mem) {
+    const tid = nextTrackerId++;
+    return {
+        id: tid,
+        memId: mem.id,
+        building: mem.building,
+        box: {...box},
+        smoothBox: {...box},
+        el: createLabel(mem.building, tid),
+        lastSeen: Date.now()
+    };
+}
+
+async function detect() {
+    if (!isRunning) return;
+    
+    try {
+        const preds = await model.detect(video);
+        const sx = window.innerWidth / video.videoWidth;
+        const sy = window.innerHeight / video.videoHeight;
+        
+        if (currentMode === 'normal') {
+            // ========== 일반모드: refrigerator + cup (건물 대용) 탐지 ==========
+            // 히스테리시스: 추적 중인 객체는 낮은 임계값 적용
+            const threshold = activeTrackers.size > 0 ? THRESHOLD_KEEP : THRESHOLD_START;
+            
+            // 각 클래스별로 최고 확률 1개만 선택
+            const fridgeDetected = preds
+                .filter(p => p.class === 'refrigerator' && p.score >= threshold)
+                .sort((a, b) => b.score - a.score)[0];
+            
+            const cupDetected = preds
+                .filter(p => p.class === 'cup' && p.score >= threshold)
+                .sort((a, b) => b.score - a.score)[0];
+            
+            // 최고 확률 객체들만 배열로
+            const detected = [fridgeDetected, cupDetected].filter(Boolean);
+            
+            let boxes = detected.map(p => ({
+                x: p.bbox[0] * sx, y: p.bbox[1] * sy,
+                width: p.bbox[2] * sx, height: p.bbox[3] * sy,
+                score: p.score,
+                class: p.class
+            }));
+            
+            const detectInfo = document.getElementById('detectInfo');
+            if (detected.length > 0) {
+                const maxScore = Math.round(Math.max(...detected.map(p => p.score)) * 100);
+                detectInfo.textContent = `감지: ${detected.length}개 (${maxScore}%)`;
+                detectInfo.style.background = 'rgba(34,197,94,0.8)';
+            } else {
+                detectInfo.textContent = '감지: 0개';
+                detectInfo.style.background = 'rgba(0,0,0,0.7)';
+            }
+            
+            const now = Date.now();
+            const matched = new Set(), usedBox = new Set();
+            
+            for (const [tid, t] of activeTrackers) {
+                let bestIoU = 0.3, bestIdx = -1;
+                boxes.forEach((b, i) => {
+                    if (usedBox.has(i)) return;
+                    const iou = calcIoU(t.box, b);
+                    if (iou > bestIoU) { bestIoU = iou; bestIdx = i; }
+                });
+                
+                if (bestIdx >= 0) {
+                    const b = boxes[bestIdx];
+                    t.box = {...b};
+                    t.lastSeen = now;
+                    // 보간 속도 낮춤 (부드러운 움직임)
+                    t.smoothBox.x += (b.x - t.smoothBox.x) * 0.3;
+                    t.smoothBox.y += (b.y - t.smoothBox.y) * 0.3;
+                    t.smoothBox.width += (b.width - t.smoothBox.width) * 0.3;
+                    t.smoothBox.height += (b.height - t.smoothBox.height) * 0.3;
+                    const m = buildingMemory.find(x => x.id === t.memId);
+                    if (m) updateMem(m, b);
+                    matched.add(tid);
+                    usedBox.add(bestIdx);
+                }
+            }
+            
+            const usedMem = new Set();
+            activeTrackers.forEach(t => usedMem.add(t.memId));
+            
+            boxes.forEach((b, i) => {
+                if (usedBox.has(i)) return;
+                let m = findMemory(b, usedMem);
+                if (!m) m = register(b);
+                else updateMem(m, b);
+                usedMem.add(m.id);
+                const t = createTracker(b, m);
+                activeTrackers.set(t.id, t);
+                matched.add(t.id);
+            });
+            
+            for (const [tid, t] of activeTrackers) {
+                if (!matched.has(tid)) {
+                    t.el.style.opacity = '0';
+                    t.el.style.pointerEvents = 'none';
+                    if (now - t.lastSeen > 300) {
+                        t.el.remove();
+                        activeTrackers.delete(tid);
+                    }
+                }
+            }
+            
+            for (const [tid, t] of activeTrackers) {
+                if (matched.has(tid)) {
+                    // 라벨을 객체 중앙에 배치
+                    const centerX = t.smoothBox.x + t.smoothBox.width / 2;
+                    const centerY = t.smoothBox.y + t.smoothBox.height / 2;
+                    t.el.style.left = centerX + 'px';
+                    t.el.style.top = centerY + 'px';
+                    t.el.style.transform = 'translate(-50%, -50%)';
+                    t.el.style.opacity = '1';
+                    t.el.style.pointerEvents = 'auto';
+                }
+            }
+            
+            // 자동 투시모드 체크 (3초 응시)
+            checkAutoXrayMode(matched);
+        } else {
+            // ========== 리워드모드: 자동차 탐지 ==========
+            detectRewardMode(preds, sx, sy);
+        }
+        
+    } catch(e) { console.error(e); }
+    
+    // 감지 루프 100ms 간격 (더 부드러움)
+    setTimeout(detect, 100);
+}
+
+// 리워드모드 탐지 함수 (car + mouse + tv)
+function detectRewardMode(preds, sx, sy) {
+    // 광고 재생 중이면 감지 중단
+    if (isAdPlaying) return;
+    
+    // 공통 임계값 사용 (THRESHOLD_START = 0.5, THRESHOLD_KEEP = 0.2)
+    
+    const detectInfo = document.getElementById('detectInfo');
+    const aim = document.getElementById('aimCrosshair');
+    const countdownEl = document.getElementById('aimCountdown');
+    
+    // ========== CAR 감지 - 최고 확률 1개만 ==========
+    const carThreshold = isTargetTracking ? THRESHOLD_KEEP : THRESHOLD_START;
+    const bestCar = preds
+        .filter(p => p.class === 'car' && p.score >= carThreshold)
+        .sort((a, b) => b.score - a.score)[0];
+    const detectedCars = bestCar ? [bestCar] : [];
+    
+    // ========== MOUSE 감지 - 최고 확률 1개만 ==========
+    const mouseThreshold = isBallTracking ? THRESHOLD_KEEP : THRESHOLD_START;
+    const bestMouse = preds
+        .filter(p => p.class === 'mouse' && p.score >= mouseThreshold)
+        .sort((a, b) => b.score - a.score)[0];
+    const detectedBalls = bestMouse ? [bestMouse] : [];
+    
+    // ========== TV 감지 - 최고 확률 1개만 ==========
+    const tvThreshold = isTvTracking ? THRESHOLD_KEEP : THRESHOLD_START;
+    const bestTv = preds
+        .filter(p => p.class === 'tv' && p.score >= tvThreshold)
+        .sort((a, b) => b.score - a.score)[0];
+    const detectedTvs = bestTv ? [bestTv] : [];
+    
+    // 감지 정보 업데이트
+    const totalDetected = detectedCars.length + detectedBalls.length + detectedTvs.length;
+    
+    // ========== CAR 처리 ==========
+    if (detectedCars.length > 0 && !questCompleted) {
+        isTargetTracking = true;
+        
+        const car = detectedCars[0];
+        const score = Math.round(car.score * 100);
+        const box = {
+            x: car.bbox[0] * sx,
+            y: car.bbox[1] * sy,
+            width: car.bbox[2] * sx,
+            height: car.bbox[3] * sy
+        };
+        
+        const centerX = box.x + box.width / 2;
+        const centerY = box.y + box.height / 2;
+        
+        if (!rewardTarget) {
+            rewardTarget = createRewardTarget('car');
+            overlay.appendChild(rewardTarget);
+            smoothTargetX = centerX;
+            smoothTargetY = centerY;
+        }
+        
+        smoothTargetX += (centerX - smoothTargetX) * 0.3;
+        smoothTargetY += (centerY - smoothTargetY) * 0.3;
+        
+        rewardTarget.style.left = smoothTargetX + 'px';
+        rewardTarget.style.top = smoothTargetY + 'px';
+        rewardTarget.style.opacity = '1';
+        
+        // 조준 체크
+        const isCarAimed = checkAimOnTarget(smoothTargetX, smoothTargetY);
+        
+        if (isCarAimed) {
+            detectInfo.textContent = `🚗 조준중! (${score}%)`;
+            detectInfo.style.background = 'rgba(34,197,94,0.8)';
+            
+            if (!isAimLocked && wasOutOfAim && !hasCompletedCurrentTarget) {
+                isAimLocked = true;
+                aimLockTime = Date.now();
+                currentCountdown = 3;
+                aim.classList.add('locked');
+                aim.classList.add('counting');
+                countdownEl.textContent = '3';
+            } else if (isAimLocked && !hasCompletedCurrentTarget) {
+                const elapsed = Date.now() - aimLockTime;
+                const newCountdown = Math.max(1, 3 - Math.floor(elapsed / 666));
+                
+                if (newCountdown !== currentCountdown) {
+                    currentCountdown = newCountdown;
+                    countdownEl.textContent = currentCountdown;
+                    aim.classList.remove('counting');
+                    void aim.offsetWidth;
+                    aim.classList.add('counting');
+                }
+                
+                if (elapsed >= 2000) {
+                    countdownEl.textContent = '✓';
+                    hasCompletedCurrentTarget = true;
+                    completeOneQuest();
+                    aim.classList.remove('counting');
+                    aim.classList.remove('locked');
+                }
+            }
+            wasOutOfAim = false;
+        } else {
+            detectInfo.textContent = `🚗 타겟: ${score}%`;
+            detectInfo.style.background = 'rgba(245,158,11,0.8)';
+            resetCarAimState();
+        }
+    } else {
+        isTargetTracking = false;
+        if (rewardTarget) {
+            rewardTarget.style.opacity = '0';
+        }
+        resetCarAimState();
+    }
+    
+    // ========== BALL 처리 ==========
+    if (detectedBalls.length > 0) {
+        isBallTracking = true;
+        
+        const ball = detectedBalls[0];
+        const score = Math.round(ball.score * 100);
+        const box = {
+            x: ball.bbox[0] * sx,
+            y: ball.bbox[1] * sy,
+            width: ball.bbox[2] * sx,
+            height: ball.bbox[3] * sy
+        };
+        
+        const centerX = box.x + box.width / 2;
+        const centerY = box.y + box.height / 2;
+        
+        if (!ballTarget) {
+            ballTarget = createRewardTarget('ball');
+            overlay.appendChild(ballTarget);
+            smoothBallX = centerX;
+            smoothBallY = centerY;
+        }
+        
+        smoothBallX += (centerX - smoothBallX) * 0.3;
+        smoothBallY += (centerY - smoothBallY) * 0.3;
+        
+        ballTarget.style.left = smoothBallX + 'px';
+        ballTarget.style.top = smoothBallY + 'px';
+        ballTarget.style.opacity = '1';
+        
+        // 조준 체크
+        const isBallAimed = checkAimOnTarget(smoothBallX, smoothBallY);
+        
+        if (isBallAimed && !isAdPlaying) {
+            detectInfo.textContent = `🖱️ 조준중! (${score}%)`;
+            detectInfo.style.background = 'rgba(139,92,246,0.8)';
+            
+            if (!isBallAimLocked) {
+                // 조준 시작
+                isBallAimLocked = true;
+                ballAimLockTime = Date.now();
+                ballCountdown = 3;
+                aim.classList.add('locked');
+                aim.classList.add('counting');
+                countdownEl.textContent = '3';
+                console.log('Ball aim started!');
+            } else {
+                // 조준 진행 중
+                const elapsed = Date.now() - ballAimLockTime;
+                const newCountdown = Math.max(1, 3 - Math.floor(elapsed / 666));
+                
+                if (newCountdown !== ballCountdown) {
+                    ballCountdown = newCountdown;
+                    countdownEl.textContent = ballCountdown;
+                    aim.classList.remove('counting');
+                    void aim.offsetWidth;
+                    aim.classList.add('counting');
+                    console.log('Ball countdown:', ballCountdown);
+                }
+                
+                if (elapsed >= 2000) {
+                    // 광고 팝업 표시!
+                    console.log('Ball aim complete! elapsed:', elapsed);
+                    countdownEl.textContent = '✓';
+                    aim.classList.remove('counting');
+                    aim.classList.remove('locked');
+                    isBallAimLocked = false;
+                    ballAimLockTime = 0;
+                    showAdPopup();
+                }
+            }
+        } else if (!isBallAimed) {
+            detectInfo.textContent = `🖱️ 타겟: ${score}%`;
+            detectInfo.style.background = 'rgba(139,92,246,0.6)';
+            resetBallAimState();
+        }
+    } else {
+        isBallTracking = false;
+        if (ballTarget) {
+            ballTarget.style.opacity = '0';
+        }
+        resetBallAimState();
+    }
+    
+    // ========== TV 처리 ==========
+    if (detectedTvs.length > 0) {
+        isTvTracking = true;
+        
+        const tv = detectedTvs[0];
+        const score = Math.round(tv.score * 100);
+        const box = {
+            x: tv.bbox[0] * sx,
+            y: tv.bbox[1] * sy,
+            width: tv.bbox[2] * sx,
+            height: tv.bbox[3] * sy
+        };
+        
+        const centerX = box.x + box.width / 2;
+        const centerY = box.y + box.height / 2;
+        
+        if (!tvTarget) {
+            tvTarget = createRewardTarget('tv');
+            overlay.appendChild(tvTarget);
+            smoothTvX = centerX;
+            smoothTvY = centerY;
+        }
+        
+        smoothTvX += (centerX - smoothTvX) * 0.3;
+        smoothTvY += (centerY - smoothTvY) * 0.3;
+        
+        tvTarget.style.left = smoothTvX + 'px';
+        tvTarget.style.top = smoothTvY + 'px';
+        tvTarget.style.opacity = '1';
+        
+        // 조준 체크
+        const isTvAimed = checkAimOnTarget(smoothTvX, smoothTvY);
+        
+        if (isTvAimed && !isAdPlaying) {
+            detectInfo.textContent = `📺 조준중! (${score}%)`;
+            detectInfo.style.background = 'rgba(59,130,246,0.8)';
+            
+            if (!isTvAimLocked) {
+                isTvAimLocked = true;
+                tvAimLockTime = Date.now();
+                tvCountdown = 3;
+                aim.classList.add('locked');
+                aim.classList.add('counting');
+                countdownEl.textContent = '3';
+            } else {
+                const elapsed = Date.now() - tvAimLockTime;
+                const newCountdown = Math.max(1, 3 - Math.floor(elapsed / 666));
+                
+                if (newCountdown !== tvCountdown) {
+                    tvCountdown = newCountdown;
+                    countdownEl.textContent = tvCountdown;
+                    aim.classList.remove('counting');
+                    void aim.offsetWidth;
+                    aim.classList.add('counting');
+                }
+                
+                if (elapsed >= 2000) {
+                    countdownEl.textContent = '✓';
+                    aim.classList.remove('counting');
+                    aim.classList.remove('locked');
+                    isTvAimLocked = false;
+                    tvAimLockTime = 0;
+                    showAdPopup(); // TV도 광고 표시
+                }
+            }
+        } else if (!isTvAimed) {
+            detectInfo.textContent = `📺 타겟: ${score}%`;
+            detectInfo.style.background = 'rgba(59,130,246,0.6)';
+            resetTvAimState();
+        }
+    } else {
+        isTvTracking = false;
+        if (tvTarget) {
+            tvTarget.style.opacity = '0';
+        }
+        resetTvAimState();
+    }
+    
+    // 아무것도 감지 안 됨
+    if (detectedCars.length === 0 && detectedBalls.length === 0 && detectedTvs.length === 0) {
+        detectInfo.textContent = '타겟: 0개';
+        detectInfo.style.background = 'rgba(0,0,0,0.7)';
+    }
+}
+
+// 조준 체크 함수
+function checkAimOnTarget(targetX, targetY) {
+    const screenCenterX = window.innerWidth / 2;
+    const screenCenterY = window.innerHeight / 2;
+    
+    const targetUIWidth = 120;
+    const targetUIHeight = 100;
+    const boxLeft = targetX - targetUIWidth / 2;
+    const boxRight = targetX + targetUIWidth / 2;
+    const boxTop = targetY - targetUIHeight / 2;
+    const boxBottom = targetY + targetUIHeight / 2;
+    
+    return screenCenterX >= boxLeft && screenCenterX <= boxRight &&
+           screenCenterY >= boxTop && screenCenterY <= boxBottom;
+}
+
+function resetCarAimState() {
+    const aim = document.getElementById('aimCrosshair');
+    isAimLocked = false;
+    aimLockTime = 0;
+    currentCountdown = 0;
+    wasOutOfAim = true;
+    hasCompletedCurrentTarget = false;
+    // ball이나 tv가 조준 중이 아닐 때만 에임 리셋
+    if (!isBallAimLocked && !isTvAimLocked) {
+        aim.classList.remove('locked');
+        aim.classList.remove('counting');
+    }
+}
+
+function resetBallAimState() {
+    const aim = document.getElementById('aimCrosshair');
+    isBallAimLocked = false;
+    ballAimLockTime = 0;
+    ballCountdown = 0;
+    // car나 tv가 조준 중이 아닐 때만 에임 리셋
+    if (!isAimLocked && !isTvAimLocked) {
+        aim.classList.remove('locked');
+        aim.classList.remove('counting');
+    }
+}
+
+function resetTvAimState() {
+    const aim = document.getElementById('aimCrosshair');
+    isTvAimLocked = false;
+    tvAimLockTime = 0;
+    tvCountdown = 0;
+    // car나 ball이 조준 중이 아닐 때만 에임 리셋
+    if (!isAimLocked && !isBallAimLocked) {
+        aim.classList.remove('locked');
+        aim.classList.remove('counting');
+    }
+}
+
+function createRewardTarget(type = 'car') {
+    const el = document.createElement('div');
+    el.className = 'reward-target' + (type === 'ball' ? ' ball' : '') + (type === 'tv' ? ' tv' : '');
+    
+    const isBall = type === 'ball';
+    const isTv = type === 'tv';
+    const title = isBall || isTv ? '광고 시청하기' : questData.title;
+    const reward = isBall || isTv ? BALL_REWARD : questData.reward;
+    const questLabel = isBall || isTv ? '[광고]' : '[퀘스트]';
+    const icon = isBall ? '🖱️' : (isTv ? '📺' : '🚗');
+    
+    el.innerHTML = `
+        <div class="target-icon">
+            <div class="target-ring"></div>
+            <div class="target-inner"></div>
+            <div class="target-dot"></div>
+        </div>
+        <div class="reward-label">
+            <div class="reward-quest">${questLabel} ${icon}</div>
+            <div class="reward-title">${title}</div>
+            <div class="reward-info">
+                ${isBall ? '<span>🎬 5초</span>' : `<span><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>${questProgress}/${questTotal}</span>`}
+                <span><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.31-8.86c-1.77-.45-2.34-.94-2.34-1.67 0-.84.79-1.43 2.1-1.43 1.38 0 1.9.66 1.94 1.64h1.71c-.05-1.34-.87-2.57-2.49-2.97V5H10.9v1.69c-1.51.32-2.72 1.3-2.72 2.81 0 1.79 1.49 2.69 3.66 3.21 1.95.46 2.34 1.15 2.34 1.87 0 .53-.39 1.39-2.1 1.39-1.6 0-2.23-.72-2.32-1.64H8.04c.1 1.7 1.36 2.66 2.86 2.97V19h2.34v-1.67c1.52-.29 2.72-1.16 2.73-2.77-.01-2.2-1.9-2.96-3.66-3.42z"/></svg>${reward}P</span>
+            </div>
+        </div>
+    `;
+    el.style.transform = 'translate(-50%, -50%)';
+    return el;
+}
+
+function completeOneQuest() {
+    questProgress++;
+    
+    // 타겟 라벨 업데이트
+    if (rewardTarget) {
+        const progressEl = rewardTarget.querySelector('.reward-info span:first-child');
+        if (progressEl) {
+            progressEl.innerHTML = `<svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>${questProgress}/${questTotal}`;
+        }
+    }
+    
+    if (questProgress >= questTotal) {
+        // 퀘스트 완료!
+        questCompleted = true;
+        setTimeout(() => {
+            document.getElementById('questComplete').classList.add('show');
+        }, 500);
+    } else {
+        // 진행 팝업 표시
+        const popup = document.getElementById('questPopup');
+        const progress = document.getElementById('questProgress');
+        const message = document.getElementById('questMessage');
+        
+        progress.textContent = `${questProgress}/${questTotal}`;
+        message.textContent = '자동차 인식 완료!';
+        
+        popup.classList.add('show');
+        setTimeout(() => {
+            popup.classList.remove('show');
+        }, 1500);
+    }
+}
+
+// ========== 광고 시스템 ==========
+function showAdPopup() {
+    console.log('showAdPopup called!');
+    
+    try {
+        isAdPlaying = true;
+        adTimeRemaining = AD_DURATION;
+        
+        const popup = document.getElementById('adPopup');
+        const timer = document.getElementById('adTimer');
+        const progressBar = document.getElementById('adProgressBar');
+        const adStatus = document.getElementById('adStatus');
+        const adVideo = document.getElementById('adVideo');
+        
+        console.log('Elements:', { popup, timer, progressBar, adStatus, adVideo });
+        
+        if (!popup) {
+            console.error('adPopup element not found!');
+            return;
+        }
+        
+        // 초기화
+        timer.textContent = adTimeRemaining;
+        progressBar.style.width = '0%';
+        adStatus.textContent = '광고 시청 중...';
+        
+        // 팝업 표시
+        popup.classList.add('show');
+        console.log('Popup should be visible now');
+        
+        // 비디오 재생 시도
+        if (adVideo) {
+            adVideo.currentTime = 0;
+            adVideo.play().catch(e => console.log('Video play failed:', e));
+        }
+        
+        // 타이머 시작
+        adInterval = setInterval(() => {
+            adTimeRemaining--;
+            timer.textContent = adTimeRemaining;
+            
+            const progress = ((AD_DURATION - adTimeRemaining) / AD_DURATION) * 100;
+            progressBar.style.width = progress + '%';
+            
+            if (adTimeRemaining <= 0) {
+                // 광고 시청 완료 - 자동으로 닫고 보상 지급
+                clearInterval(adInterval);
+                adInterval = null;
+                
+                // 팝업 닫기
+                popup.classList.remove('show');
+                if (adVideo) adVideo.pause();
+                isAdPlaying = false;
+                
+                // 보상 안내 팝업
+                showBallRewardPopup();
+            }
+        }, 1000);
+    } catch(e) {
+        console.error('showAdPopup error:', e);
+    }
+}
+
+function skipAd() {
+    const skipBtn = document.getElementById('adSkipBtn');
+    
+    // 시청 완료된 경우에만 닫기 가능
+    if (!skipBtn.classList.contains('active')) return;
+    
+    // 광고 종료
+    if (adInterval) {
+        clearInterval(adInterval);
+        adInterval = null;
+    }
+    
+    const popup = document.getElementById('adPopup');
+    const video = document.getElementById('adVideo');
+    
+    popup.classList.remove('show');
+    video.pause();
+    
+    isAdPlaying = false;
+    
+    // 리워드 지급 팝업
+    showBallRewardPopup();
+}
+
+function showBallRewardPopup() {
+    // 퀘스트 완료 화면과 동일한 UI 사용
+    const completeScreen = document.getElementById('questComplete');
+    const title = completeScreen.querySelector('.complete-title');
+    const reward = completeScreen.querySelector('.complete-reward');
+    
+    // 광고 보상 내용으로 변경
+    title.textContent = '광고 시청 완료!';
+    reward.innerHTML = `
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.31-8.86c-1.77-.45-2.34-.94-2.34-1.67 0-.84.79-1.43 2.1-1.43 1.38 0 1.9.66 1.94 1.64h1.71c-.05-1.34-.87-2.57-2.49-2.97V5H10.9v1.69c-1.51.32-2.72 1.3-2.72 2.81 0 1.79 1.49 2.69 3.66 3.21 1.95.46 2.34 1.15 2.34 1.87 0 .53-.39 1.39-2.1 1.39-1.6 0-2.23-.72-2.32-1.64H8.04c.1 1.7 1.36 2.66 2.86 2.97V19h2.34v-1.67c1.52-.29 2.72-1.16 2.73-2.77-.01-2.2-1.9-2.96-3.66-3.42z"/></svg>
+        +${BALL_REWARD}P
+    `;
+    
+    completeScreen.classList.add('show');
+}
+
+// ========== 투시모드 함수들 ==========
+
+// 자동 투시모드 체크 (3초 응시)
+function checkAutoXrayMode(matched) {
+    if (isXrayMode) return; // 이미 투시모드면 스킵
+    if (!xrayGazeEnabled) return; // 투시 기능 비활성화 상태면 스킵
+    
+    const now = Date.now();
+    
+    // 감지된 객체가 있는 경우
+    if (matched.size > 0) {
+        const firstMatchedId = matched.values().next().value;
+        
+        // 동일 객체 계속 응시 중
+        if (xrayGazeTrackerId === firstMatchedId) {
+            const gazeDuration = now - xrayGazeStartTime;
+            
+            // 응시 진행률 표시 (핀에 프로그레스 표시)
+            const tracker = activeTrackers.get(firstMatchedId);
+            if (tracker && tracker.el) {
+                const progress = Math.min(gazeDuration / XRAY_GAZE_DURATION, 1);
+                updateXrayProgress(tracker.el, progress);
+            }
+            
+            // 3초 이상 응시 시 투시모드 시작
+            if (gazeDuration >= XRAY_GAZE_DURATION) {
+                openXrayMode();
+                resetXrayGaze();
+            }
+        } else {
+            // 새로운 객체 응시 시작
+            xrayGazeTrackerId = firstMatchedId;
+            xrayGazeStartTime = now;
+        }
+    } else {
+        // 감지된 객체 없음 - 리셋
+        resetXrayGaze();
+    }
+}
+
+// 응시 프로그레스 표시
+function updateXrayProgress(el, progress) {
+    let progressBar = el.querySelector('.xray-progress');
+    
+    if (!progressBar) {
+        progressBar = document.createElement('div');
+        progressBar.className = 'xray-progress';
+        progressBar.style.cssText = `
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60px;
+            height: 5px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 3px;
+            overflow: hidden;
+            pointer-events: none;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.3);
+        `;
+        progressBar.innerHTML = `<div class="xray-progress-fill" style="
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #FF6B6B, #FFE66D);
+            border-radius: 2px;
+            transition: width 0.1s;
+            pointer-events: none;
+            box-shadow: 0 0 8px rgba(255,107,107,0.6);
+        "></div>`;
+        el.appendChild(progressBar);
+    }
+    
+    const fill = progressBar.querySelector('.xray-progress-fill');
+    if (fill) {
+        fill.style.width = (progress * 100) + '%';
+    }
+    
+    // 프로그레스가 0이면 숨김
+    progressBar.style.opacity = progress > 0 ? '1' : '0';
+}
+
+// 응시 리셋
+function resetXrayGaze() {
+    // 기존 프로그레스 바 제거
+    if (xrayGazeTrackerId) {
+        const tracker = activeTrackers.get(xrayGazeTrackerId);
+        if (tracker && tracker.el) {
+            const progressBar = tracker.el.querySelector('.xray-progress');
+            if (progressBar) progressBar.style.opacity = '0';
+        }
+    }
+    
+    xrayGazeTrackerId = null;
+    xrayGazeStartTime = 0;
+}
+
+function openXrayMode() {
+    isXrayMode = true;
+    
+    // 응시 중인 트래커 정보 가져오기
+    const targetTracker = xrayGazeTrackerId 
+        ? activeTrackers.get(xrayGazeTrackerId) 
+        : activeTrackers.values().next().value;
+        
+    if (targetTracker) {
+        currentXrayBuilding = {
+            box: {...targetTracker.smoothBox},
+            data: buildingMemory.find(m => m.id === targetTracker.memId)
+        };
+        
+        // OpenCV로 윤곽선 검출
+        if (isOpenCvReady) {
+            detectContourFromBox(targetTracker.smoothBox);
+        }
+    }
+    
+    // 투시 오버레이 생성 및 표시
+    createXrayVisualization();
+    document.getElementById('xrayOverlay').classList.add('active');
+    document.getElementById('bottomBar').style.display = 'none';
+}
+
+// OpenCV로 감지 영역에서 윤곽선 추출
+function detectContourFromBox(box) {
+    try {
+        // 비디오에서 이미지 캡처
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = video.videoWidth;
+        tempCanvas.height = video.videoHeight;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(video, 0, 0);
+        
+        // 스케일 계산
+        const scaleX = video.videoWidth / window.innerWidth;
+        const scaleY = video.videoHeight / window.innerHeight;
+        
+        // 박스 영역 추출 (여유 공간 추가)
+        const padding = 20;
+        const x = Math.max(0, Math.floor(box.x * scaleX) - padding);
+        const y = Math.max(0, Math.floor(box.y * scaleY) - padding);
+        const w = Math.min(video.videoWidth - x, Math.floor(box.width * scaleX) + padding * 2);
+        const h = Math.min(video.videoHeight - y, Math.floor(box.height * scaleY) + padding * 2);
+        
+        // ROI 이미지 데이터 추출
+        const imageData = tempCtx.getImageData(x, y, w, h);
+        
+        // OpenCV Mat으로 변환
+        let src = cv.matFromImageData(imageData);
+        let gray = new cv.Mat();
+        let edges = new cv.Mat();
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        
+        // 그레이스케일 변환
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        
+        // 가우시안 블러 (노이즈 제거)
+        cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+        
+        // Canny 엣지 검출
+        cv.Canny(gray, edges, 50, 150);
+        
+        // 윤곽선 찾기
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        
+        // 가장 큰 윤곽선 찾기
+        let maxArea = 0;
+        let maxContourIdx = -1;
+        
+        for (let i = 0; i < contours.size(); i++) {
+            const area = cv.contourArea(contours.get(i));
+            if (area > maxArea) {
+                maxArea = area;
+                maxContourIdx = i;
+            }
+        }
+        
+        if (maxContourIdx >= 0) {
+            const contour = contours.get(maxContourIdx);
+            
+            // 윤곽선 단순화 (다각형 근사)
+            let approx = new cv.Mat();
+            const epsilon = 0.02 * cv.arcLength(contour, true);
+            cv.approxPolyDP(contour, approx, epsilon, true);
+            
+            // 좌표 배열로 변환 (화면 좌표로 스케일링)
+            const points = [];
+            for (let i = 0; i < approx.rows; i++) {
+                points.push({
+                    x: (approx.data32S[i * 2] + x) / scaleX,
+                    y: (approx.data32S[i * 2 + 1] + y) / scaleY
+                });
+            }
+            
+            // 모양 분류
+            const shape = classifyShape(points.length, approx);
+            
+            detectedContour = {
+                points: points,
+                shape: shape,
+                vertexCount: points.length
+            };
+            
+            console.log('Detected shape:', shape, 'vertices:', points.length);
+            
+            approx.delete();
+        }
+        
+        // 메모리 해제
+        src.delete();
+        gray.delete();
+        edges.delete();
+        contours.delete();
+        hierarchy.delete();
+        
+    } catch (e) {
+        console.error('OpenCV contour detection error:', e);
+        detectedContour = null;
+    }
+}
+
+// 모양 분류
+function classifyShape(vertexCount, contour) {
+    // 항상 직사각형으로 반환
+    return 'rectangle';
+}
+
+function closeXrayMode() {
+    isXrayMode = false;
+    document.getElementById('xrayOverlay').classList.remove('active');
+    document.getElementById('bottomBar').style.display = 'flex';
+    
+    // 응시 상태 리셋
+    resetXrayGaze();
+    
+    // 윤곽선 데이터 리셋
+    detectedContour = null;
+}
+
+function createXrayVisualization() {
+    const xrayBuilding = document.getElementById('xrayBuilding');
+    const overlay = document.getElementById('xrayOverlay');
+    
+    // 기존 내용 초기화 (닫기 버튼과 정보 패널 제외)
+    xrayBuilding.innerHTML = '';
+    
+    // 건물 박스 기준으로 층 생성
+    let box = currentXrayBuilding?.box;
+    if (!box) {
+        // 기본값 설정
+        box = {
+            x: window.innerWidth * 0.15,
+            y: window.innerHeight * 0.2,
+            width: window.innerWidth * 0.7,
+            height: window.innerHeight * 0.5
+        };
+    }
+    
+    // 건물 데이터 (실제로는 API에서 가져올 데이터)
+    const buildingData = {
+        name: currentXrayBuilding?.data?.name || '테헤란로 빌딩',
+        floors: [
+            { floor: 'RF', name: '옥상정원', type: 'rooftop', icons: ['eco', 'sun'] },
+            { floor: '12F', name: 'SKY라운지', type: 'lounge', icons: ['restaurant', 'wifi'] },
+            { floor: '11F', name: '스타트업 A사', type: 'office', icons: ['business', 'meeting'] },
+            { floor: '10F', name: '스타트업 B사', type: 'office', icons: ['business', 'computer'] },
+            { floor: '9F', name: 'IT 솔루션', type: 'office', icons: ['computer', 'cloud'] },
+            { floor: '8F', name: '법률사무소', type: 'office', icons: ['legal', 'meeting'] },
+            { floor: '7F', name: '회계법인', type: 'office', icons: ['finance', 'document'] },
+            { floor: '6F', name: '공실', type: 'vacant', icons: [] },
+            { floor: '5F', name: '피트니스센터', type: 'fitness', icons: ['fitness', 'health'] },
+            { floor: '4F', name: '카페 & 라운지', type: 'cafe', icons: ['cafe', 'wifi'] },
+            { floor: '3F', name: '컨퍼런스룸', type: 'conference', icons: ['meeting', 'projector'] },
+            { floor: '2F', name: '편의시설', type: 'retail', icons: ['store', 'atm'] },
+            { floor: '1F', name: '로비 & 안내', type: 'lobby', icons: ['info', 'security'] },
+            { floor: 'B1', name: '주차장', type: 'parking', icons: ['parking', 'ev'] },
+            { floor: 'B2', name: '기계실', type: 'utility', icons: ['hvac', 'electric'] }
+        ],
+        stats: {
+            totalFloors: 12,
+            occupancy: 87,
+            tenants: 24,
+            openNow: 18
+        }
+    };
+    
+    // 정보 패널 업데이트
+    document.getElementById('xrayBuildingName').textContent = buildingData.name;
+    document.getElementById('xrayFloors').textContent = buildingData.stats.totalFloors + '층';
+    document.getElementById('xrayOccupancy').textContent = buildingData.stats.occupancy + '%';
+    document.getElementById('xrayTenants').textContent = buildingData.stats.tenants + '개';
+    document.getElementById('xrayOpen').textContent = buildingData.stats.openNow + '개';
+    
+    // 시스템 태그 동적 생성 (한글 + 유용한 정보)
+    generateSystemTags();
+    
+    // 층별 높이 계산
+    const totalFloors = buildingData.floors.length;
+    const floorHeight = Math.min(35, (window.innerHeight * 0.55) / totalFloors);
+    const startY = window.innerHeight * 0.08;
+    const buildingWidth = window.innerWidth * 0.75;
+    const buildingLeft = (window.innerWidth - buildingWidth) / 2;
+    
+    // 검출된 윤곽선 모양 정보
+    const shape = detectedContour?.shape || 'rectangle';
+    const shapeLabel = getShapeLabel(shape);
+    
+    // 모양 인디케이터 추가
+    const shapeIndicator = document.createElement('div');
+    shapeIndicator.innerHTML = `
+        <div style="position:absolute;top:10px;left:50%;transform:translateX(-50%);
+            padding:6px 14px;background:rgba(6,182,212,0.3);border:1px solid #06B6D4;
+            border-radius:20px;color:#06B6D4;font-size:12px;font-weight:600;
+            display:flex;align-items:center;gap:6px;z-index:10;">
+            <span>${getShapeIcon(shape)}</span>
+            <span>${shapeLabel} 건물</span>
+        </div>
+    `;
+    xrayBuilding.appendChild(shapeIndicator);
+    
+    // 층별 레이어 생성 (모양에 따라 다르게)
+    buildingData.floors.forEach((floor, index) => {
+        const floorEl = document.createElement('div');
+        floorEl.className = 'xray-floor';
+        
+        const yPos = startY + (index * floorHeight);
+        
+        // 층별 스타일
+        let bgColor = 'rgba(6,182,212,0.08)';
+        let borderColor = 'rgba(6,182,212,0.4)';
+        
+        if (floor.type === 'vacant') {
+            bgColor = 'rgba(234,179,8,0.15)';
+            borderColor = 'rgba(234,179,8,0.6)';
+        } else if (floor.type === 'rooftop') {
+            bgColor = 'rgba(34,197,94,0.15)';
+            borderColor = 'rgba(34,197,94,0.6)';
+        } else if (floor.type === 'parking' || floor.type === 'utility') {
+            bgColor = 'rgba(100,116,139,0.15)';
+            borderColor = 'rgba(100,116,139,0.5)';
+        }
+        
+        // 모양에 따른 층 스타일 적용
+        const floorStyle = getFloorStyleByShape(shape, index, totalFloors, buildingLeft, buildingWidth, yPos, floorHeight, bgColor, borderColor);
+        floorEl.style.cssText = floorStyle.css;
+        
+        if (floorStyle.clipPath) {
+            floorEl.style.clipPath = floorStyle.clipPath;
+        }
+        
+        // 층 데이터 저장 (클릭 시 사용)
+        floorEl.dataset.floor = floor.floor;
+        floorEl.dataset.name = floor.name;
+        floorEl.dataset.type = floor.type;
+        
+        // 층 클릭 이벤트 - 상세 페이지로 이동
+        floorEl.addEventListener('click', function() {
+            openFloorDetailPage(floor, buildingData.name);
+        });
+        
+        // 층 라벨
+        const label = document.createElement('div');
+        label.className = 'xray-floor-label';
+        label.innerHTML = `<span style="color:#06B6D4;font-weight:700">${floor.floor}</span> ${floor.name}`;
+        label.style.cssText = `
+            left: ${buildingLeft + 10}px;
+            top: 50%;
+            transform: translateY(-50%);
+            position: absolute;
+            padding: 4px 10px;
+            background: rgba(15,23,42,0.95);
+            border: 1px solid ${borderColor};
+            border-radius: 4px;
+            color: white;
+            font-size: 11px;
+            font-weight: 500;
+            white-space: nowrap;
+        `;
+        floorEl.appendChild(label);
+        
+        // 아이콘들
+        if (floor.icons.length > 0) {
+            const iconsDiv = document.createElement('div');
+            iconsDiv.className = 'xray-icons';
+            iconsDiv.style.cssText = `
+                position: absolute;
+                right: 30px;
+                top: 50%;
+                transform: translateY(-50%);
+                display: flex;
+                gap: 4px;
+            `;
+            
+            floor.icons.forEach(iconType => {
+                const iconEl = document.createElement('div');
+                iconEl.className = 'xray-icon';
+                iconEl.innerHTML = getXrayIcon(iconType);
+                iconsDiv.appendChild(iconEl);
+            });
+            
+            floorEl.appendChild(iconsDiv);
+        }
+        
+        xrayBuilding.appendChild(floorEl);
+    });
+    
+    // 연결선 및 시스템 태그 추가
+    addXraySystemTags(buildingLeft, buildingWidth, startY, floorHeight, totalFloors);
+}
+
+// 층 상세 페이지 열기
+function openFloorDetailPage(floor, buildingName) {
+    // X레이 모드 닫기
+    closeXrayMode();
+    
+    // 상세 페이지 열기
+    const detailPage = document.getElementById('detailPage');
+    const detailContent = document.getElementById('detailContent');
+    
+    // 층 타입별 정보
+    const floorInfo = getFloorDetailInfo(floor);
+    
+    detailContent.innerHTML = `
+        <!-- 대표 이미지 -->
+        <div class="detail-hero" style="background:linear-gradient(135deg,${floorInfo.color}88,${floorInfo.color}44),url('${floorInfo.image}');background-size:cover;background-position:center;position:relative">
+            <div style="position:absolute;top:0;left:0;right:0;bottom:0;background:linear-gradient(to bottom,transparent 50%,rgba(0,0,0,0.7))"></div>
+            <div style="position:absolute;bottom:16px;left:16px;right:16px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <span style="padding:4px 10px;background:${floorInfo.color};border-radius:12px;color:white;font-size:11px;font-weight:600">${floorInfo.typeName}</span>
+                    <span style="padding:4px 10px;background:${floor.type === 'vacant' ? '#EAB308' : '#22C55E'};border-radius:12px;color:white;font-size:11px;font-weight:600">${floor.type === 'vacant' ? '입주가능' : '운영중'}</span>
+                </div>
+                <div style="color:white;font-size:24px;font-weight:700;text-shadow:0 2px 4px rgba(0,0,0,0.3)">${floor.floor} ${floor.name}</div>
+                <div style="color:rgba(255,255,255,0.8);font-size:13px;margin-top:4px">${buildingName}</div>
+            </div>
+        </div>
+        
+        <!-- 퀵 정보 -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:-30px 16px 16px;position:relative;z-index:1">
+            <div style="background:rgba(30,41,59,0.95);padding:12px;border-radius:12px;text-align:center;border:1px solid rgba(255,255,255,0.1)">
+                <div style="color:rgba(255,255,255,0.6);font-size:10px;margin-bottom:4px">운영시간</div>
+                <div style="color:white;font-size:12px;font-weight:600">${floorInfo.hours}</div>
+            </div>
+            <div style="background:rgba(30,41,59,0.95);padding:12px;border-radius:12px;text-align:center;border:1px solid rgba(255,255,255,0.1)">
+                <div style="color:rgba(255,255,255,0.6);font-size:10px;margin-bottom:4px">면적</div>
+                <div style="color:white;font-size:12px;font-weight:600">${floorInfo.area}</div>
+            </div>
+            <div style="background:rgba(30,41,59,0.95);padding:12px;border-radius:12px;text-align:center;border:1px solid rgba(255,255,255,0.1)">
+                <div style="color:rgba(255,255,255,0.6);font-size:10px;margin-bottom:4px">수용인원</div>
+                <div style="color:white;font-size:12px;font-weight:600">${floorInfo.capacity}</div>
+            </div>
+        </div>
+        
+        <!-- 소개 -->
+        <div class="detail-section">
+            <div class="detail-section-title">소개</div>
+            <p style="color:rgba(255,255,255,0.8);font-size:13px;line-height:1.7">${floorInfo.description}</p>
+        </div>
+        
+        <!-- 갤러리 -->
+        <div class="detail-section">
+            <div class="detail-section-title">갤러리</div>
+            <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:8px">
+                ${floorInfo.gallery.map(img => `
+                    <div style="flex-shrink:0;width:140px;height:100px;border-radius:8px;background:url('${img}');background-size:cover;background-position:center;border:1px solid rgba(255,255,255,0.1)"></div>
+                `).join('')}
+            </div>
+        </div>
+        
+        <!-- 시설/편의사항 -->
+        <div class="detail-section">
+            <div class="detail-section-title">시설 및 편의사항</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+                ${floorInfo.amenities.map(item => `
+                    <div style="display:flex;align-items:center;gap:6px;padding:10px 14px;background:rgba(255,255,255,0.05);border-radius:10px;border:1px solid rgba(255,255,255,0.08)">
+                        <span style="font-size:16px">${item.icon}</span>
+                        <span style="color:rgba(255,255,255,0.9);font-size:12px">${item.name}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        
+        <!-- 이용 안내 -->
+        <div class="detail-section">
+            <div class="detail-section-title">이용 안내</div>
+            <div style="background:rgba(255,255,255,0.03);border-radius:12px;overflow:hidden">
+                ${floorInfo.info.map((item, i) => `
+                    <div style="display:flex;justify-content:space-between;padding:14px 16px;${i < floorInfo.info.length - 1 ? 'border-bottom:1px solid rgba(255,255,255,0.05)' : ''}">
+                        <span style="color:rgba(255,255,255,0.6);font-size:13px">${item.label}</span>
+                        <span style="color:white;font-size:13px;font-weight:500">${item.value}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        
+        <!-- 리뷰 -->
+        <div class="detail-section">
+            <div class="detail-section-title">방문자 리뷰 <span style="color:${floorInfo.color};margin-left:4px">★ ${floorInfo.rating}</span></div>
+            <div style="display:flex;flex-direction:column;gap:12px">
+                ${floorInfo.reviews.map(review => `
+                    <div style="background:rgba(255,255,255,0.03);padding:14px;border-radius:10px">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                            <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,${floorInfo.color},${floorInfo.color}88);display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:600">${review.name.charAt(0)}</div>
+                            <div>
+                                <div style="color:white;font-size:12px;font-weight:600">${review.name}</div>
+                                <div style="color:rgba(255,255,255,0.5);font-size:10px">${review.date}</div>
+                            </div>
+                            <div style="margin-left:auto;color:#EAB308;font-size:11px">${'★'.repeat(review.stars)}${'☆'.repeat(5-review.stars)}</div>
+                        </div>
+                        <p style="color:rgba(255,255,255,0.8);font-size:12px;line-height:1.6;margin:0">${review.text}</p>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        
+        <!-- 연락처 -->
+        <div class="detail-section" style="margin-bottom:20px">
+            <div class="detail-section-title">문의하기</div>
+            <div style="display:flex;gap:10px">
+                <button style="flex:1;padding:14px;background:${floorInfo.color};border:none;border-radius:10px;color:white;font-size:13px;font-weight:600;cursor:pointer">
+                    📞 전화 문의
+                </button>
+                <button style="flex:1;padding:14px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);border-radius:10px;color:white;font-size:13px;font-weight:600;cursor:pointer">
+                    💬 채팅 문의
+                </button>
+            </div>
+        </div>
+    `;
+    
+    detailPage.classList.add('open');
+}
+
+// 층 타입별 상세 정보 반환
+function getFloorDetailInfo(floor) {
+    const defaultInfo = {
+        color: '#06B6D4',
+        typeName: '일반',
+        image: 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=800',
+        hours: '09:00-18:00',
+        area: '330㎡',
+        capacity: '50명',
+        description: '현대적인 인테리어와 쾌적한 환경을 갖춘 공간입니다.',
+        gallery: [
+            'https://images.unsplash.com/photo-1497366216548-37526070297c?w=400',
+            'https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=400',
+            'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=400'
+        ],
+        amenities: [
+            { icon: '🌡️', name: '냉난방' },
+            { icon: '📶', name: '와이파이' },
+            { icon: '🚻', name: '화장실' }
+        ],
+        info: [
+            { label: '운영시간', value: '09:00 - 18:00' },
+            { label: '전화번호', value: '02-1234-5678' },
+            { label: '위치', value: floor.floor }
+        ],
+        rating: '4.5',
+        reviews: [
+            { name: '김민수', date: '2024.01.10', stars: 5, text: '깔끔하고 좋아요!' }
+        ]
+    };
+    
+    const typeInfo = {
+        'rooftop': {
+            color: '#22C55E',
+            typeName: '옥상정원',
+            image: 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800',
+            hours: '09:00-21:00',
+            area: '500㎡',
+            capacity: '100명',
+            description: '도심 속 자연을 느낄 수 있는 옥상정원입니다. 태양광 패널이 설치되어 친환경 에너지를 생산하고 있으며, 사계절 다양한 식물들을 감상할 수 있습니다. 휴식 공간과 소규모 이벤트 공간으로 활용됩니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400',
+                'https://images.unsplash.com/photo-1416879595882-3373a0480b5b?w=400',
+                'https://images.unsplash.com/photo-1585320806297-9794b3e4eeae?w=400',
+                'https://images.unsplash.com/photo-1459411552884-841db9b3cc2a?w=400'
+            ],
+            amenities: [
+                { icon: '🌿', name: '정원' },
+                { icon: '☀️', name: '태양광' },
+                { icon: '🪑', name: '휴게공간' },
+                { icon: '📸', name: '포토존' },
+                { icon: '🚿', name: '급수시설' }
+            ],
+            info: [
+                { label: '운영시간', value: '09:00 - 21:00' },
+                { label: '이용요금', value: '입주사 무료' },
+                { label: '예약', value: '필요 (관리실)' },
+                { label: '반려동물', value: '동반 가능' }
+            ],
+            rating: '4.8',
+            reviews: [
+                { name: '이서연', date: '2024.01.15', stars: 5, text: '점심시간에 자주 와요. 도심 속 힐링 공간!' },
+                { name: '박준혁', date: '2024.01.12', stars: 5, text: '야경이 정말 예뻐요. 퇴근 후 산책하기 좋습니다.' },
+                { name: '최유진', date: '2024.01.08', stars: 4, text: '겨울에는 좀 춥지만 경치가 좋아서 자주 옵니다.' }
+            ]
+        },
+        'lounge': {
+            color: '#F59E0B',
+            typeName: 'SKY 라운지',
+            image: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=800',
+            hours: '07:00-23:00',
+            area: '280㎡',
+            capacity: '60명',
+            description: '탁 트인 전망을 자랑하는 프리미엄 라운지입니다. 입주사 직원들을 위한 휴식 공간으로, 커피와 다과가 제공됩니다. 간단한 미팅이나 네트워킹에 최적화된 공간입니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=400',
+                'https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=400',
+                'https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=400',
+                'https://images.unsplash.com/photo-1564069114553-7215e1ff1890?w=400'
+            ],
+            amenities: [
+                { icon: '☕', name: '커피머신' },
+                { icon: '🛋️', name: '소파' },
+                { icon: '📶', name: '고속와이파이' },
+                { icon: '🔌', name: '충전존' },
+                { icon: '📺', name: 'TV' },
+                { icon: '🎮', name: '게임존' }
+            ],
+            info: [
+                { label: '운영시간', value: '07:00 - 23:00' },
+                { label: '이용대상', value: '입주사 전용' },
+                { label: '음료', value: '무료 제공' },
+                { label: '다과', value: '일부 유료' }
+            ],
+            rating: '4.7',
+            reviews: [
+                { name: '정다은', date: '2024.01.14', stars: 5, text: '전망이 정말 좋고 커피도 맛있어요!' },
+                { name: '김태호', date: '2024.01.11', stars: 4, text: '점심시간에 붐비지만 저녁에는 여유롭습니다.' }
+            ]
+        },
+        'office': {
+            color: '#6366F1',
+            typeName: '오피스',
+            image: 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=800',
+            hours: '09:00-18:00',
+            area: '450㎡',
+            capacity: '80명',
+            description: '최신 시설을 갖춘 프리미엄 오피스 공간입니다. 개방형 업무 공간과 집중 업무실, 회의실을 갖추고 있으며, 스마트 오피스 시스템이 적용되어 있습니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1497366216548-37526070297c?w=400',
+                'https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=400',
+                'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=400',
+                'https://images.unsplash.com/photo-1568992687947-868a62a9f521?w=400'
+            ],
+            amenities: [
+                { icon: '💻', name: '회의실' },
+                { icon: '🖨️', name: '복합기' },
+                { icon: '📶', name: '전용회선' },
+                { icon: '🔒', name: '보안시스템' },
+                { icon: '❄️', name: '개별냉난방' },
+                { icon: '🅿️', name: '전용주차' }
+            ],
+            info: [
+                { label: '운영시간', value: '24시간 출입가능' },
+                { label: '업무시간', value: '09:00 - 18:00' },
+                { label: '입주문의', value: '02-1234-5678' },
+                { label: '면적', value: '전용 450㎡' }
+            ],
+            rating: '4.6',
+            reviews: [
+                { name: '스타트업A', date: '2024.01.13', stars: 5, text: '시설이 최신이고 관리가 잘 됩니다.' },
+                { name: '개발자B', date: '2024.01.09', stars: 4, text: '인터넷 속도가 빠르고 집중하기 좋아요.' }
+            ]
+        },
+        'cafe': {
+            color: '#92400E',
+            typeName: '카페',
+            image: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=800',
+            hours: '08:00-22:00',
+            area: '180㎡',
+            capacity: '45명',
+            description: '따뜻한 분위기의 카페에서 향긋한 커피와 함께 여유로운 시간을 보내세요. 직접 로스팅한 원두와 신선한 베이커리를 제공합니다. 노트북 작업에 적합한 좌석도 마련되어 있습니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=400',
+                'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=400',
+                'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400',
+                'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=400'
+            ],
+            amenities: [
+                { icon: '☕', name: '스페셜티커피' },
+                { icon: '🥐', name: '베이커리' },
+                { icon: '📶', name: '무료와이파이' },
+                { icon: '🔌', name: '콘센트' },
+                { icon: '📖', name: '북코너' }
+            ],
+            info: [
+                { label: '운영시간', value: '08:00 - 22:00' },
+                { label: '아메리카노', value: '4,500원' },
+                { label: '라떼', value: '5,000원' },
+                { label: '입주사 할인', value: '20%' }
+            ],
+            rating: '4.5',
+            reviews: [
+                { name: '커피러버', date: '2024.01.16', stars: 5, text: '원두가 정말 좋아요. 매일 출근길에 들립니다.' },
+                { name: '직장인M', date: '2024.01.14', stars: 4, text: '할인 받으니까 가성비 최고!' },
+                { name: '노마드K', date: '2024.01.10', stars: 5, text: '콘센트 자리가 많아서 작업하기 좋아요.' }
+            ]
+        },
+        'fitness': {
+            color: '#EF4444',
+            typeName: '피트니스',
+            image: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800',
+            hours: '06:00-23:00',
+            area: '400㎡',
+            capacity: '70명',
+            description: '최신 운동기구와 전문 트레이너가 있는 프리미엄 피트니스 센터입니다. 헬스장, 요가/필라테스룸, 샤워시설을 갖추고 있으며, PT 프로그램도 운영합니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=400',
+                'https://images.unsplash.com/photo-1571902943202-507ec2618e8f?w=400',
+                'https://images.unsplash.com/photo-1540497077202-7c8a3999166f?w=400',
+                'https://images.unsplash.com/photo-1518611012118-696072aa579a?w=400'
+            ],
+            amenities: [
+                { icon: '🏋️', name: '웨이트존' },
+                { icon: '🏃', name: '러닝머신' },
+                { icon: '🧘', name: '요가룸' },
+                { icon: '🚿', name: '샤워실' },
+                { icon: '🧴', name: '어메니티' },
+                { icon: '🔐', name: '락커' }
+            ],
+            info: [
+                { label: '운영시간', value: '06:00 - 23:00' },
+                { label: '월 이용권', value: '99,000원' },
+                { label: 'PT 1회', value: '70,000원' },
+                { label: '입주사 할인', value: '30%' }
+            ],
+            rating: '4.6',
+            reviews: [
+                { name: '헬스인J', date: '2024.01.15', stars: 5, text: '기구가 다양하고 청결해요. 샤워시설도 좋습니다.' },
+                { name: '요가러버', date: '2024.01.12', stars: 5, text: '요가룸이 넓고 쾌적해요!' },
+                { name: '새벽운동파', date: '2024.01.08', stars: 4, text: '6시부터 열어서 출근 전에 운동하기 좋아요.' }
+            ]
+        },
+        'conference': {
+            color: '#8B5CF6',
+            typeName: '컨퍼런스룸',
+            image: 'https://images.unsplash.com/photo-1431540015161-0bf868a2d407?w=800',
+            hours: '09:00-21:00',
+            area: '200㎡',
+            capacity: '100명',
+            description: '세미나, 워크샵, 기업 행사를 위한 다목적 컨퍼런스룸입니다. 대형 스크린, 음향 시스템, 화상회의 장비가 완비되어 있습니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1431540015161-0bf868a2d407?w=400',
+                'https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=400',
+                'https://images.unsplash.com/photo-1517502884422-41eaead166d4?w=400',
+                'https://images.unsplash.com/photo-1560439514-4e9645039924?w=400'
+            ],
+            amenities: [
+                { icon: '📽️', name: '빔프로젝터' },
+                { icon: '🎤', name: '음향시스템' },
+                { icon: '📹', name: '화상회의' },
+                { icon: '📋', name: '화이트보드' },
+                { icon: '🖥️', name: '대형스크린' }
+            ],
+            info: [
+                { label: '예약가능시간', value: '09:00 - 21:00' },
+                { label: '시간당 이용료', value: '50,000원' },
+                { label: '반일 대관', value: '180,000원' },
+                { label: '종일 대관', value: '300,000원' }
+            ],
+            rating: '4.4',
+            reviews: [
+                { name: '기획팀장', date: '2024.01.11', stars: 4, text: '장비가 잘 갖춰져 있고 직원분들이 친절해요.' },
+                { name: 'HR매니저', date: '2024.01.05', stars: 5, text: '워크샵 진행하기 좋은 공간입니다.' }
+            ]
+        },
+        'parking': {
+            color: '#3B82F6',
+            typeName: '주차장',
+            image: 'https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=800',
+            hours: '24시간',
+            area: '2,500㎡',
+            capacity: '120대',
+            description: '지하 2개층 규모의 넓은 주차장입니다. 전기차 충전소 4기를 갖추고 있으며, 주차위치 안내 시스템이 설치되어 있습니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=400',
+                'https://images.unsplash.com/photo-1573348722427-f1d6819fdf98?w=400',
+                'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400'
+            ],
+            amenities: [
+                { icon: '🚗', name: '자주식주차' },
+                { icon: '⚡', name: '전기차충전' },
+                { icon: '📍', name: '위치안내' },
+                { icon: '📹', name: 'CCTV' },
+                { icon: '🛗', name: '엘리베이터' }
+            ],
+            info: [
+                { label: '운영시간', value: '24시간' },
+                { label: '기본요금', value: '10분당 500원' },
+                { label: '1일 최대', value: '20,000원' },
+                { label: '입주사 할인', value: '50%' }
+            ],
+            rating: '4.2',
+            reviews: [
+                { name: '출퇴근족', date: '2024.01.13', stars: 4, text: '주차 자리 찾기 쉽고 전기차 충전 편해요.' }
+            ]
+        },
+        'vacant': {
+            color: '#EAB308',
+            typeName: '공실',
+            image: 'https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=800',
+            hours: '상담 후 결정',
+            area: '420㎡',
+            capacity: '협의',
+            description: '탁 트인 전망과 효율적인 공간 구성이 특징인 임대 공간입니다. 입주사 니즈에 맞춰 인테리어 협의가 가능하며, 다양한 업종 입주가 가능합니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=400',
+                'https://images.unsplash.com/photo-1497366216548-37526070297c?w=400',
+                'https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=400'
+            ],
+            amenities: [
+                { icon: '🪟', name: '자연채광' },
+                { icon: '🌆', name: '시티뷰' },
+                { icon: '🛗', name: '전용출입구' },
+                { icon: '❄️', name: '개별냉난방' },
+                { icon: '🔧', name: '인테리어협의' }
+            ],
+            info: [
+                { label: '전용면적', value: '420㎡ (127평)' },
+                { label: '임대료', value: '상담 문의' },
+                { label: '관리비', value: '㎡당 15,000원' },
+                { label: '입주가능일', value: '즉시 입주' }
+            ],
+            rating: '-',
+            reviews: []
+        },
+        'utility': {
+            color: '#64748B',
+            typeName: '기계실',
+            image: 'https://images.unsplash.com/photo-1581094794329-c8112a89af12?w=800',
+            hours: '관리자 전용',
+            area: '300㎡',
+            capacity: '-',
+            description: '건물 전체의 전기, 냉난방, 급배수 등을 관리하는 핵심 시설입니다. 비상발전기와 UPS가 설치되어 있어 정전 시에도 72시간 전력 공급이 가능합니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1581094794329-c8112a89af12?w=400',
+                'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400'
+            ],
+            amenities: [
+                { icon: '⚡', name: '비상발전기' },
+                { icon: '❄️', name: '냉동기' },
+                { icon: '🔥', name: '보일러' },
+                { icon: '💧', name: '급수펌프' },
+                { icon: '🔋', name: 'UPS' }
+            ],
+            info: [
+                { label: '출입', value: '관리자 전용' },
+                { label: '비상발전', value: '72시간 가동' },
+                { label: '점검일', value: '매월 첫째주 월요일' },
+                { label: '비상연락', value: '02-1234-0000' }
+            ],
+            rating: '-',
+            reviews: []
+        },
+        'lobby': {
+            color: '#0EA5E9',
+            typeName: '로비',
+            image: 'https://images.unsplash.com/photo-1497366412874-3415097a27e7?w=800',
+            hours: '24시간',
+            area: '350㎡',
+            capacity: '-',
+            description: '건물의 첫인상을 결정하는 로비입니다. 안내데스크, 우편함, 택배보관함이 위치해 있으며 24시간 보안요원이 상주합니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1497366412874-3415097a27e7?w=400',
+                'https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=400',
+                'https://images.unsplash.com/photo-1564069114553-7215e1ff1890?w=400'
+            ],
+            amenities: [
+                { icon: '🛎️', name: '안내데스크' },
+                { icon: '📬', name: '우편함' },
+                { icon: '📦', name: '택배함' },
+                { icon: '👮', name: '24시보안' },
+                { icon: '🏧', name: 'ATM' }
+            ],
+            info: [
+                { label: '운영시간', value: '24시간' },
+                { label: '안내데스크', value: '08:00 - 20:00' },
+                { label: '택배수령', value: '무인택배함 24시간' },
+                { label: '보안', value: '24시간 상주' }
+            ],
+            rating: '4.3',
+            reviews: [
+                { name: '입주사직원', date: '2024.01.14', stars: 4, text: '안내데스크 직원분들이 친절해요.' }
+            ]
+        },
+        'retail': {
+            color: '#7C3AED',
+            typeName: '편의시설',
+            image: 'https://images.unsplash.com/photo-1604719312566-8912e9227c6a?w=800',
+            hours: '24시간',
+            area: '150㎡',
+            capacity: '-',
+            description: '24시간 운영되는 편의점과 ATM이 위치해 있습니다. 간단한 식사류, 음료, 생필품을 구매할 수 있습니다.',
+            gallery: [
+                'https://images.unsplash.com/photo-1604719312566-8912e9227c6a?w=400',
+                'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400',
+                'https://images.unsplash.com/photo-1557821552-17105176677c?w=400'
+            ],
+            amenities: [
+                { icon: '🏪', name: '24시편의점' },
+                { icon: '🏧', name: 'ATM' },
+                { icon: '📠', name: '복사/팩스' },
+                { icon: '📱', name: '휴대폰충전' }
+            ],
+            info: [
+                { label: '편의점', value: '24시간' },
+                { label: 'ATM', value: '24시간' },
+                { label: '입주사 할인', value: '일부 상품 10%' },
+                { label: '결제수단', value: '카드/현금/페이' }
+            ],
+            rating: '4.1',
+            reviews: [
+                { name: '야근러', date: '2024.01.10', stars: 4, text: '24시간이라 야근할 때 정말 편해요.' }
+            ]
+        }
+    };
+    
+    return typeInfo[floor.type] || defaultInfo;
+}
+
+function getXrayIcon(type) {
+    const icons = {
+        'eco': '<svg viewBox="0 0 24 24"><path d="M12 22c4.97 0 9-4.03 9-9-4.97 0-9 4.03-9 9zM5.6 10.25c0 1.38 1.12 2.5 2.5 2.5.53 0 1.01-.16 1.42-.44l-.02.19c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5l-.02-.19c.4.28.89.44 1.42.44 1.38 0 2.5-1.12 2.5-2.5 0-1-.59-1.85-1.43-2.25.84-.4 1.43-1.25 1.43-2.25 0-1.38-1.12-2.5-2.5-2.5-.53 0-1.01.16-1.42.44l.02-.19C14.5 4.12 13.38 3 12 3S9.5 4.12 9.5 5.5l.02.19c-.4-.28-.89-.44-1.42-.44-1.38 0-2.5 1.12-2.5 2.5 0 1 .59 1.85 1.43 2.25-.84.4-1.43 1.25-1.43 2.25z" fill="#22C55E"/></svg>',
+        'sun': '<svg viewBox="0 0 24 24"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z" fill="#EAB308"/></svg>',
+        'restaurant': '<svg viewBox="0 0 24 24"><path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z" fill="#F97316"/></svg>',
+        'wifi': '<svg viewBox="0 0 24 24"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z" fill="#06B6D4"/></svg>',
+        'business': '<svg viewBox="0 0 24 24"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z" fill="#6366F1"/></svg>',
+        'meeting': '<svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" fill="#8B5CF6"/></svg>',
+        'computer': '<svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z" fill="#3B82F6"/></svg>',
+        'cloud': '<svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" fill="#0EA5E9"/></svg>',
+        'legal': '<svg viewBox="0 0 24 24"><path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z" fill="#A855F7"/></svg>',
+        'finance': '<svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" fill="#10B981"/></svg>',
+        'document': '<svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" fill="#64748B"/></svg>',
+        'fitness': '<svg viewBox="0 0 24 24"><path d="M20.57 14.86L22 13.43 20.57 12 17 15.57 8.43 7 12 3.43 10.57 2 9.14 3.43 7.71 2 5.57 4.14 4.14 2.71 2.71 4.14l1.43 1.43L2 7.71l1.43 1.43L2 10.57 3.43 12 7 8.43 15.57 17 12 20.57 13.43 22l1.43-1.43L16.29 22l2.14-2.14 1.43 1.43 1.43-1.43-1.43-1.43L22 16.29z" fill="#EF4444"/></svg>',
+        'health': '<svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-1.99.9-1.99 2L3 19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 11h-4v4h-4v-4H6v-4h4V6h4v4h4v4z" fill="#F43F5E"/></svg>',
+        'cafe': '<svg viewBox="0 0 24 24"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.9 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM2 21h18v-2H2v2z" fill="#92400E"/></svg>',
+        'store': '<svg viewBox="0 0 24 24"><path d="M20 4H4v2h16V4zm1 10v-2l-1-5H4l-1 5v2h1v6h10v-6h4v6h2v-6h1zm-9 4H6v-4h6v4z" fill="#7C3AED"/></svg>',
+        'atm': '<svg viewBox="0 0 24 24"><path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z" fill="#059669"/></svg>',
+        'info': '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" fill="#0284C7"/></svg>',
+        'security': '<svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" fill="#475569"/></svg>',
+        'parking': '<svg viewBox="0 0 24 24"><path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z" fill="#3B82F6"/></svg>',
+        'ev': '<svg viewBox="0 0 24 24"><path d="M7 20v-1h10v1c0 .55-.45 1-1 1H8c-.55 0-1-.45-1-1zm10.32-17H6.68l-4 8.5V14c0 .55.45 1 1 1h1v.68c0 .63.31 1.22.83 1.57C7.3 16.22 9.54 15 12 15c2.46 0 4.7 1.22 5.49 2.25.52-.35.83-.94.83-1.57V15h1c.55 0 1-.45 1-1v-2.5l-4-8.5z" fill="#22C55E"/></svg>',
+        'hvac': '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.94-.49-7-3.85-7-7.93s3.05-7.44 7-7.93v15.86zm2-15.86c3.94.49 7 3.85 7 7.93s-3.05 7.44-7 7.93V4.07z" fill="#64748B"/></svg>',
+        'electric': '<svg viewBox="0 0 24 24"><path d="M7 2v11h3v9l7-12h-4l4-8z" fill="#EAB308"/></svg>',
+        'projector': '<svg viewBox="0 0 24 24"><path d="M22 11h-2V9c0-1.1-.9-2-2-2h-6.29l-3.71-3.71V2H7v1.29L5.29 5H4c-1.1 0-2 .9-2 2v2H0v2h2v4H0v2h2v2c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-2h2v-2h-2v-4h2v-2zM8 17c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3z" fill="#8B5CF6"/></svg>'
+    };
+    return icons[type] || '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#06B6D4"/></svg>';
+}
+
+function addXraySystemTags(buildingLeft, buildingWidth, startY, floorHeight, totalFloors) {
+    // 우측 시스템 태그 제거됨 - UI 간소화
+}
+
+// 모양 라벨
+function getShapeLabel(shape) {
+    const labels = {
+        'triangle': '삼각형',
+        'square': '정사각형',
+        'rectangle': '직사각형',
+        'pentagon': '오각형',
+        'hexagon': '육각형',
+        'circle': '원형',
+        'polygon': '다각형'
+    };
+    return labels[shape] || '사각형';
+}
+
+// 모양 아이콘
+function getShapeIcon(shape) {
+    const icons = {
+        'triangle': '△',
+        'square': '◆',
+        'rectangle': '▬',
+        'pentagon': '⬠',
+        'hexagon': '⬡',
+        'circle': '●',
+        'polygon': '◇'
+    };
+    return icons[shape] || '▬';
+}
+
+// 시스템 태그 동적 생성 (한글 + 유용한 정보)
+function generateSystemTags() {
+    const tagsContainer = document.getElementById('xraySystemTags');
+    tagsContainer.innerHTML = '';
+    
+    // 항상 노출되는 고정 태그 (5개) - 순서 랜덤
+    const fixedTags = [
+        { title: '흡연 구역', value: '옥상 지정구역', color: '#78716C' },
+        { title: '와이파이', value: '무료 제공', color: '#10B981' },
+        { title: 'ATM', value: '1F 로비', color: '#10B981' },
+        { title: '편의점', value: '2F 24시간', color: '#0EA5E9' },
+        { title: '냉난방', value: '가동중 22°C', color: '#06B6D4' }
+    ].sort(() => Math.random() - 0.5); // 고정 태그 순서 랜덤화
+    
+    // 랜덤으로 선택될 태그들
+    const randomTags = [
+        { title: '친환경 옥상', value: '태양광 발전', color: '#22C55E' },
+        { title: '엘레베이터', value: '3기 운행중', color: '#F59E0B' },
+        { title: '소방 시스템', value: '정상 가동', color: '#EF4444' },
+        { title: '주차장', value: 'B1~B2 · 120대', color: '#3B82F6' },
+        { title: '주차 요금', value: '10분당 500원', color: '#8B5CF6' },
+        { title: '보안', value: '24시 경비', color: '#64748B' },
+        { title: '전기차 충전', value: 'B1 4대 가능', color: '#22D3EE' },
+        { title: '장애인 시설', value: '엘리베이터·화장실', color: '#A855F7' },
+        { title: '카페', value: '4F 08:00~22:00', color: '#92400E' },
+        { title: '피트니스', value: '5F 06:00~23:00', color: '#DC2626' },
+        { title: '관리비', value: '㎡당 15,000원', color: '#8B5CF6' },
+        { title: '공실률', value: '현재 5%', color: '#EF4444' },
+        { title: '공유자전거', value: '건물 앞', color: '#06B6D4' },
+        { title: '택배함', value: '1F 24시간', color: '#8B5CF6' },
+        { title: 'CCTV', value: '전층 운영', color: '#64748B' },
+        { title: '출입통제', value: '카드키+안면', color: '#3B82F6' }
+    ];
+    
+    // 랜덤 태그 3개 선택
+    const shuffled = randomTags.sort(() => Math.random() - 0.5);
+    const selectedRandom = shuffled.slice(0, 3);
+    
+    // 고정 태그 + 랜덤 태그 합치기
+    const allSelectedTags = [...fixedTags, ...selectedRandom];
+    
+    allSelectedTags.forEach(tag => {
+        const tagEl = document.createElement('div');
+        tagEl.className = 'xray-system-tag';
+        tagEl.innerHTML = `
+            <div class="xray-system-tag-dot" style="background:${tag.color}"></div>
+            <span class="xray-system-tag-title">${tag.title}</span>
+            <span class="xray-system-tag-value">${tag.value}</span>
+        `;
+        tagsContainer.appendChild(tagEl);
+    });
+}
+
+// 모양에 따른 층 스타일 계산
+function getFloorStyleByShape(shape, floorIndex, totalFloors, baseLeft, baseWidth, yPos, floorHeight, bgColor, borderColor) {
+    const progress = floorIndex / totalFloors; // 0 (상단) ~ 1 (하단)
+    
+    let left = baseLeft;
+    let width = baseWidth;
+    let clipPath = null;
+    
+    switch (shape) {
+        case 'triangle':
+            // 삼각형: 위로 갈수록 좁아짐
+            const taperRatio = 0.3 + (progress * 0.7); // 0.3 ~ 1.0
+            width = baseWidth * taperRatio;
+            left = baseLeft + (baseWidth - width) / 2;
+            break;
+            
+        case 'circle':
+            // 원형: 중앙이 가장 넓음 (타원형)
+            const centerProgress = Math.abs(progress - 0.5) * 2; // 0 (중앙) ~ 1 (끝)
+            const ellipseRatio = Math.sqrt(1 - centerProgress * centerProgress * 0.5);
+            width = baseWidth * ellipseRatio;
+            left = baseLeft + (baseWidth - width) / 2;
+            break;
+            
+        case 'hexagon':
+            // 육각형: 상하단 좁고 중앙 넓음
+            if (progress < 0.2) {
+                const hexRatio = 0.6 + (progress / 0.2) * 0.4;
+                width = baseWidth * hexRatio;
+            } else if (progress > 0.8) {
+                const hexRatio = 0.6 + ((1 - progress) / 0.2) * 0.4;
+                width = baseWidth * hexRatio;
+            }
+            left = baseLeft + (baseWidth - width) / 2;
+            break;
+            
+        case 'pentagon':
+            // 오각형: 위쪽이 뾰족
+            if (progress < 0.3) {
+                const pentRatio = 0.4 + (progress / 0.3) * 0.6;
+                width = baseWidth * pentRatio;
+            }
+            left = baseLeft + (baseWidth - width) / 2;
+            break;
+            
+        case 'square':
+        case 'rectangle':
+        default:
+            // 기본 사각형
+            break;
+    }
+    
+    return {
+        css: `
+            top: ${yPos}px;
+            left: ${left}px;
+            width: ${width}px;
+            height: ${floorHeight - 3}px;
+            background: linear-gradient(180deg, ${bgColor}, transparent);
+            border-color: ${borderColor};
+            transition: all 0.3s ease;
+        `,
+        clipPath: clipPath
+    };
+}
+
+async function init() {
+    video = document.getElementById('video');
+    overlay = document.getElementById('overlay');
+    videoCanvas = document.getElementById('videoCanvas');
+    ctx = videoCanvas.getContext('2d', {willReadFrequently: true});
+    
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {facingMode:'environment', width:{ideal:1280}, height:{ideal:720}},
+            audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        
+        // 핀치 줌 이벤트 설정
+        setupPinchZoom();
+        
+        // 라벨 클릭 이벤트 설정 (이벤트 위임)
+        setupLabelClickHandler();
+        
+        // X레이뷰 스크롤 전파 방지
+        setupXrayScrollContainment();
+        
+        // 실제 카메라 줌 시도 (지원되는 기기만)
+        tryNativeZoom(stream);
+        
+        document.querySelector('.loading-text').textContent = 'AI 모델 로딩...';
+        model = await cocoSsd.load();
+        
+        document.getElementById('loading').classList.add('hidden');
+        isRunning = true;
+        detect();
+    } catch(e) {
+        document.querySelector('.loading-text').textContent = '카메라 접근 실패: ' + e.message;
+    }
+}
+
+// X레이뷰 스크롤 전파 방지
+function setupXrayScrollContainment() {
+    const scrollableElements = [
+        document.getElementById('xrayBuilding'),
+        document.querySelector('.xray-info-panel'),
+        document.querySelector('.xray-system-tags'),
+        document.querySelector('.xray-live-items')
+    ];
+    
+    scrollableElements.forEach(el => {
+        if (!el) return;
+        
+        el.addEventListener('touchmove', function(e) {
+            // 스크롤 가능한 영역에서만 터치 이동 허용, 전파 방지
+            e.stopPropagation();
+        }, { passive: true });
+        
+        el.addEventListener('touchstart', function(e) {
+            // 스크롤 시작 시 현재 스크롤 위치 저장
+            this._startY = e.touches[0].clientY;
+            this._startX = e.touches[0].clientX;
+            this._startScrollTop = this.scrollTop;
+            this._startScrollLeft = this.scrollLeft;
+        }, { passive: true });
+    });
+    
+    // 정보 패널에서 스크롤이 끝에 도달했을 때 바운스 방지
+    const infoPanel = document.querySelector('.xray-info-panel');
+    if (infoPanel) {
+        infoPanel.addEventListener('touchmove', function(e) {
+            const isAtTop = this.scrollTop <= 0;
+            const isAtBottom = this.scrollTop + this.clientHeight >= this.scrollHeight;
+            const deltaY = e.touches[0].clientY - this._startY;
+            
+            // 끝에서 더 스크롤하려고 할 때 기본 동작 방지
+            if ((isAtTop && deltaY > 0) || (isAtBottom && deltaY < 0)) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+    }
+}
+
+// 핀치 줌 설정
+let videoTrack = null;
+let hasNativeZoom = false;
+
+function tryNativeZoom(stream) {
+    videoTrack = stream.getVideoTracks()[0];
+    const capabilities = videoTrack.getCapabilities?.();
+    if (capabilities?.zoom) {
+        hasNativeZoom = true;
+        console.log('네이티브 카메라 줌 지원:', capabilities.zoom);
+    }
+}
+
+function setupPinchZoom() {
+    const container = document.getElementById('container');
+    
+    container.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            initialPinchDistance = getPinchDistance(e.touches);
+            initialZoom = currentZoom;
+        }
+    }, { passive: true });
+    
+    container.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2) {
+            const currentDistance = getPinchDistance(e.touches);
+            const scale = currentDistance / initialPinchDistance;
+            let newZoom = initialZoom * scale;
+            
+            // 줌 범위 제한
+            newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+            
+            if (Math.abs(newZoom - currentZoom) > 0.01) {
+                currentZoom = newZoom;
+                applyZoom();
+            }
+        }
+    }, { passive: true });
+    
+    container.addEventListener('touchend', (e) => {
+        if (e.touches.length < 2) {
+            initialPinchDistance = 0;
+            // 줌 인디케이터 숨기기
+            setTimeout(() => {
+                document.getElementById('zoomIndicator').classList.remove('show');
+            }, 1000);
+        }
+    }, { passive: true });
+}
+
+function getPinchDistance(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+function applyZoom() {
+    // 줌 인디케이터 표시
+    const indicator = document.getElementById('zoomIndicator');
+    indicator.textContent = currentZoom.toFixed(1) + 'x';
+    indicator.classList.add('show');
+    
+    if (hasNativeZoom && videoTrack) {
+        // 네이티브 카메라 줌 (화질 유지)
+        try {
+            const capabilities = videoTrack.getCapabilities();
+            const minZoom = capabilities.zoom.min || 1;
+            const maxZoom = capabilities.zoom.max || 4;
+            const nativeZoom = Math.min(maxZoom, Math.max(minZoom, currentZoom));
+            videoTrack.applyConstraints({ advanced: [{ zoom: nativeZoom }] });
+        } catch(e) {
+            // 실패 시 CSS 줌으로 폴백
+            applyCssZoom();
+        }
+    } else {
+        // CSS 줌 (모든 기기 지원)
+        applyCssZoom();
+    }
+}
+
+function applyCssZoom() {
+    video.style.transform = `scale(${currentZoom})`;
+    overlay.style.transform = `scale(${currentZoom})`;
+}
+
+window.onload = init;
+</script>
+</body>
+</html>
